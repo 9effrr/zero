@@ -76,11 +76,11 @@ if (!db.notes) db.notes = {};
 
 /* the five sections of life/work; every task and project can belong to one */
 const AREAS = [
-  { id: 'personal', name: 'Personal', color: '#8FD19E', al: ['personal', 'شخصي', 'شخصية'] },
-  { id: 'housing', name: 'Housing', color: '#E6C07B', al: ['housing', 'سكن', 'الإسكان', 'الاسكان', 'اسكان', 'إسكان'] },
-  { id: 'zerodocs', name: 'Zerodocs', color: '#7AA2FF', al: ['zerodocs', 'زيرودوكس', 'زيرو_دوكس'] },
-  { id: 'outsource', name: 'Outsource', color: '#C59BFF', al: ['outsource', 'اوتسورس', 'أوتسورس', 'آوتسورس'] },
-  { id: 'dorba', name: 'Dorba', color: '#FF8F8F', al: ['dorba', 'دربة', 'دربه'] }
+  { id: 'personal', name: 'Personal', color: '#9CC2A4', al: ['personal', 'شخصي', 'شخصية'] },
+  { id: 'housing', name: 'Housing', color: '#D9B48F', al: ['housing', 'سكن', 'الإسكان', 'الاسكان', 'اسكان', 'إسكان'] },
+  { id: 'zerodocs', name: 'Zerodocs', color: '#93AFC2', al: ['zerodocs', 'زيرودوكس', 'زيرو_دوكس'] },
+  { id: 'outsource', name: 'Outsource', color: '#B7A4D0', al: ['outsource', 'اوتسورس', 'أوتسورس', 'آوتسورس'] },
+  { id: 'dorba', name: 'Dorba', color: '#E39A86', al: ['dorba', 'دربة', 'دربه'] }
 ];
 const areaOf = id => AREAS.find(a => a.id === id) || null;
 const findArea = s => { const n = String(s || '').toLowerCase(); return AREAS.find(a => a.al.includes(n)) || null; };
@@ -180,7 +180,7 @@ function findProject(name, areaId) {
   return pool.find(p => k(p) === n) || pool.find(p => k(p).startsWith(n));
 }
 function newNote(text = '') {
-  const n = { id: uid(), text, createdAt: new Date().toISOString(), updatedAt: now(), deleted: false };
+  const n = { id: uid(), title: '', text, createdAt: new Date().toISOString(), updatedAt: now(), deleted: false };
   db.notes[n.id] = n; save(); return n;
 }
 
@@ -849,7 +849,7 @@ function renderMain() {
   const app = $('#app');
   if (!LS.get('signedIn', false)) { app.innerHTML = welcomeHTML(); return; }
   const a = document.activeElement;
-  const keep = a && a.id && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && !a.closest('.sheet') ? { id: a.id, v: a.value, s: a.selectionStart, e: a.selectionEnd } : null;
+  const keep = a && a.id && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && !a.closest('.sheet, .writer') ? { id: a.id, v: a.value, s: a.selectionStart, e: a.selectionEnd } : null;
   const ot = $('#tabs'); if (ot) tabsScroll = ot.scrollLeft;
   app.innerHTML = `<div class="shell">${sideHTML()}<main class="main" id="main"><div class="mob-top"><img src="logo.png" alt="Zerodocs control" width="52" height="32" class="mob-logo"><button class="ib" data-act="settings" aria-label="Settings">${I.gear}</button></div>${bannerHTML()}<div class="qa-top">${qaHTML('qa-d')}</div>${viewHTML()}</main>${bottomHTML()}</div>`;
   const tb = $('#tabs');
@@ -862,7 +862,7 @@ function renderMain() {
 }
 function softRender() {
   const a = document.activeElement;
-  if (a && a.closest && a.closest('.sheet') && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) { renderMain(); return; }
+  if (a && a.closest && a.closest('.sheet, .writer') && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) { renderMain(); return; }
   renderMain(); if (ui.sheet && ui.sheet.type !== 'event') renderSheet();
 }
 function viewHTML() {
@@ -927,18 +927,21 @@ function homeView() {
     </div>
   </div>`;
 }
-function noteTitle(n) { const l = (n.text || '').trim().split('\n'); return { t: l[0] || 'Empty note', p: l.slice(1).join('\n').trim() }; }
+function noteTitle(n) {
+  if ((n.title || '').trim()) return { t: n.title.trim(), p: (n.text || '').trim() };
+  const l = (n.text || '').trim().split('\n'); return { t: l[0] || 'Empty note', p: l.slice(1).join('\n').trim() };
+}
 function notesView() {
   const list = notes();
   const q = ui.nq.trim().toLowerCase();
-  const shown = q ? list.filter(n => (n.text || '').toLowerCase().includes(q)) : list;
+  const shown = q ? list.filter(n => ((n.title || '') + ' ' + (n.text || '')).toLowerCase().includes(q)) : list;
   let html = `<div class="narrow"><div class="hdr"><div><div class="sub">${list.length} ${list.length === 1 ? 'note' : 'notes'}</div><h1>Notes</h1></div><button class="pill" data-act="new-note">+ New note</button></div>`;
   if (list.length > 5) html += `<input id="note-q" class="tin" dir="auto" type="search" placeholder="Search notes" value="${esc(ui.nq)}" style="margin-bottom:12px">`;
-  html += shown.map(n => {
+  html += `<div class="ngrid">${shown.map((n, i) => {
     const { t, p } = noteTitle(n);
-    return `<button class="card note-row" data-act="open-note" data-id="${esc(n.id)}"><span class="t" dir="auto">${esc(t)}</span>${p ? `<span class="p" dir="auto">${esc(p.slice(0, 240))}</span>` : ''}<span class="d">${esc(new Date(n.updatedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</span></button>`;
-  }).join('');
-  if (!list.length) html += '<div class="empty" style="padding-top:20px">No notes yet. Tap “New note”, or write one in the bar below.</div>';
+    return `<button class="ncard ${i === 0 && !q ? 'first' : ''}" data-act="open-note" data-id="${esc(n.id)}"><span class="t" dir="auto">${esc(t)}</span>${p ? `<span class="p" dir="auto">${esc(p.slice(0, 280))}</span>` : ''}<span class="d">${esc(new Date(n.updatedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</span></button>`;
+  }).join('')}</div>`;
+  if (!list.length) html += '<div class="empty" style="padding-top:20px">No notes yet. Tap “New note” to start writing.</div>';
   else if (!shown.length) html += '<div class="empty">No notes match.</div>';
   return html + '</div>';
 }
@@ -1248,7 +1251,7 @@ function cleanupNote() {
   const s = ui.sheet; if (!s || s.type !== 'note') return;
   const n = db.notes[s.id]; if (!n) return;
   clearTimeout(typeT);
-  if (!(n.text || '').trim()) { n.deleted = true; n.updatedAt = now(); }
+  if (!(n.text || '').trim() && !(n.title || '').trim()) { n.deleted = true; n.updatedAt = now(); }
   save();
 }
 function openEventSheet(ev, pre = {}) {
@@ -1277,7 +1280,8 @@ function renderSheet() {
   else if (s.type === 'note') { const n = db.notes[s.id]; if (!n || n.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = noteSheet(n); }
   else if (s.type === 'image') inner = imageSheet(s);
   const sc = $('.sheet', root); const top = sc ? sc.scrollTop : 0;
-  root.innerHTML = `<div class="sheet-bg" data-act="close-sheet"></div><div class="sheet ${s.type === 'note' ? 'note-sheet' : ''}" role="dialog" aria-modal="true" aria-label="${s.type}">${inner}</div>`;
+  if (s.type === 'note') { const nb = $('#n-body', root); const nt = nb ? nb.scrollTop : 0; root.innerHTML = inner; growNote(); const b2 = $('#n-body', root); if (b2) b2.scrollTop = nt; return; }
+  root.innerHTML = `<div class="sheet-bg" data-act="close-sheet"></div><div class="sheet" role="dialog" aria-modal="true" aria-label="${s.type}">${inner}</div>`;
   const nsc = $('.sheet', root); if (nsc) nsc.scrollTop = top;
   autoGrow(); hydrateImgs(root);
 }
@@ -1314,11 +1318,21 @@ function taskSheet(t) {
     ${addForm('link', 'Paste a link', { id: 'l-new', type: 'url' })}`)}
   <p class="mut" style="font-size:12px;margin-top:26px">Created ${esc(new Date(t.createdAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}${t.postponed ? ` · postponed ${t.postponed}×` : ''}${t.doneAt ? ` · done ${esc(new Date(t.doneAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}` : ''}</p>`;
 }
-function noteSheet(n) {
-  return `
-  <div class="sheet-top"><button class="ib" data-act="close-sheet" aria-label="Close">${I.l}</button><span class="crumb">${esc(new Date(n.updatedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</span><button class="ib" data-act="del-note" aria-label="Delete note">${I.trash}</button></div>
-  <textarea id="n-text" class="note-ta" dir="auto" placeholder="Write…" aria-label="Note">${esc(n.text || '')}</textarea>`;
+function noteMeta(n) {
+  const words = ((n.title || '') + ' ' + (n.text || '')).trim().split(/\s+/).filter(Boolean).length;
+  return `${esc(new Date(n.updatedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))} · ${words} ${words === 1 ? 'word' : 'words'}`;
 }
+/* a full page for writing: title on top, then as much text as you like */
+function noteSheet(n) {
+  return `<div class="writer" role="dialog" aria-label="Note">
+    <div class="bar"><button class="ib" data-act="close-sheet" aria-label="Back">${I.l}</button><span class="meta" id="n-meta">${noteMeta(n)}</span><button class="ib" data-act="del-note" aria-label="Delete note">${I.trash}</button></div>
+    <div class="body" id="n-body">
+      <textarea id="n-title" class="wt" rows="1" dir="auto" placeholder="Title" aria-label="Title">${esc(n.title || '')}</textarea>
+      <div class="rule"></div>
+      <textarea id="n-text" class="wb" dir="auto" placeholder="Start writing…" aria-label="Note">${esc(n.text || '')}</textarea>
+    </div></div>`;
+}
+function growNote() { ['n-title', 'n-text'].forEach(id => { const el = document.getElementById(id); if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; } }); }
 function imageSheet(s) {
   return `
   <div class="sheet-top"><button class="ib" data-act="close-sheet" aria-label="Back">${I.l}</button><span class="crumb">Image</span><button class="ib" data-act="img-del" aria-label="Delete image">${I.trash}</button></div>
@@ -1373,7 +1387,10 @@ window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferr
 function go(view) { ui.view = view; LS.set('view', view); if (view !== 'project') { ui.projectId = null; } LS.set('projectId', ui.projectId); ui.showDone = false; renderMain(); window.scrollTo(0, 0); }
 function closeSheetQuiet() { if (ui.sheet) { if (history.state && history.state.zsheet) history.back(); ui.sheet = null; renderSheet(); } }
 function openProject(id) { if (!db.projects[id]) return; ui.projectId = id; ui.view = 'project'; LS.set('view', 'project'); LS.set('projectId', id); renderMain(); window.scrollTo(0, 0); }
-function openNote(id) { openSheet({ type: 'note', id }); setTimeout(() => { const i = $('#n-text'); if (i) { i.focus(); if (!i.value) return; i.setSelectionRange(i.value.length, i.value.length); } }, 60); }
+function openNote(id) {
+  openSheet({ type: 'note', id });
+  setTimeout(() => { const n = db.notes[id]; const i = n && !(n.title || n.text) ? $('#n-title') : null; if (i) i.focus(); }, 80);
+}
 function setMonth(m) { ui.month = m; renderMain(); refreshMonth(m); }
 function monthAdd(m, n) { const d = pd(m + '-01'); d.setMonth(d.getMonth() + n); return ymd(d).slice(0, 7); }
 function curTask() { return ui.sheet && ui.sheet.type === 'task' ? db.tasks[ui.sheet.id] : null; }
@@ -1388,7 +1405,7 @@ document.addEventListener('click', e => {
     case 'tfilter': ui.tFilter = el.dataset.v; renderMain(); break;
     case 'new-note': { const n = newNote(''); openNote(n.id); break; }
     case 'open-note': if (db.notes[el.dataset.id]) openNote(el.dataset.id); break;
-    case 'del-note': { const s = ui.sheet; const n = s && db.notes[s.id]; if (n && (!(n.text || '').trim() || confirm('Delete this note?'))) { n.deleted = true; n.text = n.text || ''; n.updatedAt = now(); save(); closeSheet(); toast('Note deleted'); } break; }
+    case 'del-note': { const s = ui.sheet; const n = s && db.notes[s.id]; if (n && ((!(n.text || '').trim() && !(n.title || '').trim()) || confirm('Delete this note?'))) { n.deleted = true; n.text = n.text || ''; n.updatedAt = now(); save(); closeSheet(); toast('Note deleted'); } break; }
     case 'img-open': if (t) { ui.sheet = { type: 'image', img: el.dataset.img, taskId: t.id, prev: ui.sheet }; renderSheet(); } break;
     case 'img-del': { const s = ui.sheet; const x = s && db.tasks[s.taskId]; if (x && confirm('Remove this image?')) { removeImage(x, s.img); ui.sheet = s.prev; renderSheet(); renderMain(); } break; }
     case 'pick': ui.sel = el.dataset.d; if (ui.sel.slice(0, 7) !== ui.month) setMonth(ui.sel.slice(0, 7)); else renderMain(); break;
@@ -1455,6 +1472,7 @@ document.addEventListener('keydown', e => {
   if (el.form) return; /* forms submit themselves (works with Arabic keyboards too) */
   const k = el.dataset && el.dataset.enter;
   if (el.id === 't-title' || el.id === 'ev-title') { e.preventDefault(); el.blur(); return; }
+  if (el.id === 'n-title') { e.preventDefault(); const b = $('#n-text'); if (b) b.focus(); return; }
   if (!k) return;
   e.preventDefault();
   const v = el.value.trim(); const t = curTask();
@@ -1485,7 +1503,13 @@ document.addEventListener('input', e => {
   if (el.classList.contains('title-in') && el.tagName === 'TEXTAREA') { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
   if (t && el.id === 't-title') { t.title = el.value; t.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(save, 600); return; }
   if (el.id === 'note-q') { ui.nq = el.value; const pos = el.selectionStart; renderMain(); const q = $('#note-q'); if (q) { q.focus(); try { q.setSelectionRange(pos, pos); } catch { } } return; }
-  if (el.id === 'n-text' && ui.sheet && ui.sheet.type === 'note') { const n = db.notes[ui.sheet.id]; if (n) { n.text = el.value; n.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(save, 500); } return; }
+  if ((el.id === 'n-text' || el.id === 'n-title') && ui.sheet && ui.sheet.type === 'note') {
+    const n = db.notes[ui.sheet.id];
+    if (n) { if (el.id === 'n-title') n.title = el.value; else n.text = el.value; n.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(save, 500); }
+    el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px';
+    const m = document.getElementById('n-meta'); if (m && n) m.innerHTML = noteMeta(n);
+    return;
+  }
   if (t && el.id === 't-notes') { t.notes = el.value; t.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(save, 600); return; }
   if (t && el.dataset.sub) { t.subtasks = t.subtasks.map(s => s.id === el.dataset.sub ? { ...s, title: el.value } : s); t.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(save, 600); return; }
   if (ui.sheet && ui.sheet.type === 'event') {
