@@ -9,6 +9,7 @@ on:
       - 'app.js'
       - 'index.html'
       - 'styles.css'
+      - '*.png'
   workflow_dispatch:
 
 permissions:
@@ -35,9 +36,15 @@ jobs:
       - name: Apply newer source files
         run: |
           W=android/app/src/main
-          [ -f ovr-MainActivity.kt ] && cp ovr-MainActivity.kt $W/java/app/zero/widget/MainActivity.kt
+          J=$W/java/app/zero/widget
+          [ -f ovr-MainActivity.kt ] && cp ovr-MainActivity.kt $J/MainActivity.kt
+          [ -f ovr-Data.kt ] && cp ovr-Data.kt $J/Data.kt
           [ -f ovr-strings.xml ] && cp ovr-strings.xml $W/res/values/strings.xml
+          [ -f ovr-colors.xml ] && cp ovr-colors.xml $W/res/values/colors.xml
           [ -f ovr-shortcuts.xml ] && cp ovr-shortcuts.xml $W/res/xml/shortcuts.xml
+          [ -f ovr-ic_fg.png ] && cp ovr-ic_fg.png $W/res/drawable-nodpi/ic_fg.png
+          [ -f ovr-logo.png ] && cp ovr-logo.png $W/res/drawable-nodpi/logo.png
+          for f in add today tasks review; do [ -f sc-$f.png ] && cp sc-$f.png $W/res/drawable-nodpi/sc_$f.png; done
           true
 
       - name: Bundle the app's interface into the APK
