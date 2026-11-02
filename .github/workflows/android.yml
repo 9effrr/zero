@@ -1,10 +1,13 @@
-name: Build Zero widget
+name: Build Android app
 
 on:
   push:
     paths:
       - 'zero-widget-src.tgz'
       - '.github/workflows/android.yml'
+      - 'app.js'
+      - 'index.html'
+      - 'styles.css'
   workflow_dispatch:
 
 permissions:
@@ -28,6 +31,11 @@ jobs:
       - name: Unpack source
         run: tar xzf zero-widget-src.tgz
 
+      - name: Bundle the app's interface into the APK
+        run: |
+          mkdir -p android/app/src/main/assets/www
+          cp index.html app.js styles.css manifest.webmanifest *.png android/app/src/main/assets/www/
+
       - name: Build APK
         working-directory: android
         run: gradle assembleRelease --no-daemon --stacktrace
@@ -39,7 +47,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: widget-${{ github.run_number }}
-          name: Zero widget ${{ github.run_number }}
-          body: Install zero-widget.apk on your phone.
+          name: Zerodocs control ${{ github.run_number }}
+          body: Android app with home-screen widget. Install zero-widget.apk on your phone or tablet.
           files: zero-widget.apk
           make_latest: true
