@@ -1,0 +1,58 @@
+name: Build Mac app
+
+on:
+  push:
+    paths:
+      - 'mac-main.js'
+      - 'mac-package.json'
+      - 'mac-icon.png'
+      - '.github/workflows/mac.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Prepare source
+        run: |
+          mkdir mac
+          cp mac-main.js mac/main.js
+          cp mac-package.json mac/package.json
+          cp mac-icon.png mac/icon.png
+
+      - name: Build the app (Apple Silicon + Intel)
+        working-directory: mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          npm install --no-audit --no-fund
+          npx electron-builder --mac --universal --dir --publish never
+
+      - name: Sign locally and package as DMG
+        run: |
+          APP=$(ls -d mac/dist/mac-universal/*.app | head -1)
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP"
+          mkdir dmg
+          cp -R "$APP" dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname "Ctrl Z" -srcfolder dmg -ov -format UDZO CtrlZ.dmg
+          ls -l CtrlZ.dmg
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mac
+          name: Ctrl Z for Mac
+          body: Mac app. Download CtrlZ.dmg, open it and drag Ctrl Z into Applications.
+          files: CtrlZ.dmg
+          make_latest: false
