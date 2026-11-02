@@ -1,4 +1,4 @@
-const V = 'zero-v3';
+const V = 'zero-v4';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'logo.png', 'favicon.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {

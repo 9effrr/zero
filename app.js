@@ -179,10 +179,13 @@ function merge(l, r) {
 }
 
 /* ---------------- auth ---------------- */
+const NATIVE = !!window.ZeroNative; /* running inside the Android app */
+const APK_URL = 'https://github.com/9effrr/zero/releases/latest/download/zero-widget.apk';
 let token = LS.get('token', null);
 let tokenClient = null, waiters = [], authErr = false;
 const authed = () => !!(token && token.exp > now() + 60e3);
 function gisReady() {
+  if (!document.getElementById('gsi')) { const sc = document.createElement('script'); sc.id = 'gsi'; sc.src = 'https://accounts.google.com/gsi/client'; sc.async = true; document.head.appendChild(sc); }
   return new Promise(res => {
     const ok = () => window.google && google.accounts && google.accounts.oauth2;
     if (ok()) return res();
@@ -190,7 +193,7 @@ function gisReady() {
   });
 }
 async function initAuth() {
-  if (tokenClient) return;
+  if (tokenClient || NATIVE) return;
   await gisReady();
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: CFG.clientId, scope: CFG.scopes,
@@ -198,8 +201,9 @@ async function initAuth() {
   });
 }
 function onToken(r) {
+  nativePending = false;
   if (r.error) { authErr = true; failWaiters(r.error); renderMain(); return; }
-  const ok = google.accounts.oauth2.hasGrantedAllScopes(r,
+  const ok = NATIVE || google.accounts.oauth2.hasGrantedAllScopes(r,
     'https://www.googleapis.com/auth/calendar.events', 'https://www.googleapis.com/auth/drive.file');
   if (!ok) toast('Zerodocs control needs Calendar and Drive access to sync');
   token = { access_token: r.access_token, exp: now() + (r.expires_in || 3600) * 1000 };
@@ -210,20 +214,34 @@ function onToken(r) {
   const w = waiters; waiters = []; w.forEach(x => x.res(token.access_token));
   afterAuth();
 }
-function onTokenErr(e) { authErr = true; failWaiters((e && e.type) || 'auth'); renderMain(); }
+function onTokenErr(e) { nativePending = false; authErr = true; failWaiters((e && e.type) || 'auth'); renderMain(); }
 function failWaiters(e) { const w = waiters; waiters = []; w.forEach(x => x.rej(new Error('auth:' + e))); }
+/* the Android app answers ZeroNative.auth() through this callback */
+window.__zeroAuth = (t, err, email) => {
+  if (email && !LS.get('email', '')) LS.set('email', email);
+  if (t) onToken({ access_token: t, expires_in: 3300 }); else onTokenErr({ type: err || 'auth' });
+};
+window.__zeroBack = () => { if (ui.sheet) { closeSheet(); return true; } return false; };
+let nativePending = false;
+function nativeAuth(interactive) { if (nativePending && !interactive) return; nativePending = true; try { ZeroNative.auth(!!interactive); } catch (e) { nativePending = false; } }
 async function connect(consent) {
+  if (NATIVE) { nativeAuth(true); return; }
   await initAuth();
   tokenClient.requestAccessToken({ prompt: consent ? 'consent' : '', login_hint: LS.get('email', '') || undefined });
 }
 function getToken() {
   if (authed()) return Promise.resolve(token.access_token);
+  if (NATIVE && LS.get('signedIn', false)) return new Promise((res, rej) => { waiters.push({ res, rej }); nativeAuth(false); });
   return Promise.reject(new Error('auth:expired'));
 }
-async function gfetch(url, opts = {}) {
+async function gfetch(url, opts = {}, retried = false) {
   const t = await getToken();
   const r = await fetch(url, { ...opts, headers: { Authorization: 'Bearer ' + t, ...(opts.headers || {}) } });
-  if (r.status === 401) { token = null; LS.del('token'); renderMain(); throw new Error('auth:401'); }
+  if (r.status === 401) {
+    token = null; LS.del('token');
+    if (NATIVE && !retried) { try { ZeroNative.clearToken(t); } catch { } return gfetch(url, opts, true); }
+    renderMain(); throw new Error('auth:401');
+  }
   if (!r.ok) { const txt = await r.text(); const e = new Error(r.status + ' ' + txt.slice(0, 300)); e.status = r.status; throw e; }
   return r;
 }
@@ -241,6 +259,7 @@ async function afterAuth() {
 }
 function signOut() {
   if (!confirm('Sign out of Zerodocs control on this device? Your data stays safe in your Google Drive.')) return;
+  try { if (NATIVE) ZeroNative.signOut(); } catch { }
   try { if (token && window.google) google.accounts.oauth2.revoke(token.access_token, () => { }); } catch { }
   ['token', 'signedIn', 'email', 'fileId', 'folderId', 'db', 'cals', 'events', 'dirty', 'lastSync'].forEach(LS.del);
   token = null; db = freshDb(); evCache = {}; cals = [];
@@ -949,6 +968,7 @@ function buildJSON(r) {
   return JSON.stringify({ range: { from: r.from, to: r.to, timezone: TZ }, generated: new Date().toISOString(), events: r.events, log: r.logs, tasks: tasks(), projects: projects() }, null, 2);
 }
 function download(name, text, mime) {
+  if (NATIVE) { ZeroNative.save(name, mime, text); return; }
   const blob = new Blob([text], { type: mime }); const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
@@ -1061,7 +1081,7 @@ function settingsSheet() {
     <div class="field"><span class="lb">Data file</span><span style="font-size:14px">Drive › Zero › zero-data.json</span></div></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px"><button class="btn" data-act="sync-now">${I.sync} Sync now</button>${folderId ? `<a class="btn" style="text-decoration:none" target="_blank" rel="noopener" href="https://drive.google.com/drive/folders/${esc(folderId)}">Open in Drive</a>` : '<span></span>'}</div>`)}
   ${cals.length ? sec('Calendars shown', `<div class="card">${cals.filter(c => c.selected).map(c => `<div class="field"><span class="lb" style="display:flex;align-items:center;gap:8px;color:var(--tx);min-width:0"><i style="width:8px;height:8px;border-radius:4px;background:${esc(c.color || '#7AA2FF')};flex-shrink:0"></i><span dir="auto" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.name)}</span></span><button class="sw blue ${hidden.includes(c.id) ? '' : 'on'}" data-act="cal-toggle" data-id="${esc(c.id)}" role="switch" aria-checked="${!hidden.includes(c.id)}" aria-label="Show ${esc(c.name)}"></button></div>`).join('')}</div>`) : ''}
-  ${sec('Install', deferredPrompt ? '<button class="btn full" data-act="install">Install Zerodocs control on this device</button>' : '<p class="mut" style="margin:0;font-size:13px;line-height:1.6">Chrome on Android: menu ⋮ › Add to Home screen / Install app. Chrome on Mac: the install icon in the address bar, or menu › Cast, save and share › Install page as app.</p>')}
+  ${NATIVE ? sec('Home screen', `<button class="btn full" data-act="pin-widget">Add the widget to your home screen</button><p class="mut" style="margin:10px 0 0;font-size:13px;line-height:1.6">Shows today's events and urgent tasks. Long-press the app icon for quick actions.</p>`) : sec('Install', `${/Android/i.test(navigator.userAgent) ? `<a class="btn full" style="text-decoration:none;margin-bottom:10px" href="${APK_URL}">Download the Android app (with widget)</a>` : ''}` + (deferredPrompt ? '<button class="btn full" data-act="install">Install Zerodocs control on this device</button>' : '<p class="mut" style="margin:0;font-size:13px;line-height:1.6">Chrome on Android: menu ⋮ › Add to Home screen / Install app. Chrome on Mac: the install icon in the address bar, or menu › Cast, save and share › Install page as app.</p>'))}
   ${sec('Quick add tips', `<p class="mut" style="margin:0;font-size:13px;line-height:1.8" dir="auto">غداً · بعد غد · الخميس · 15/11 · بعد 3 أيام · ٤م · 16:30 · عاجل أو ! · #مشروع · كل شهر / كل أسبوع / كل يوم<br>Start with @ (or اجتماع + time) to create a Google Calendar event.<br>Press N on a keyboard to jump to quick add.</p>`)}
   <button class="btn danger full" style="margin-top:26px" data-act="signout">Sign out on this device</button>`;
 }
@@ -1114,6 +1134,7 @@ document.addEventListener('click', e => {
     case 'sync-now': if (!authed()) { connect(false); } else { sync(); refreshMonth(ui.month, true); loadCals().catch(() => { }); toast('Syncing…'); } break;
     case 'signout': signOut(); break;
     case 'cal-toggle': { const h = new Set(db.prefs.hiddenCals || []); h.has(el.dataset.id) ? h.delete(el.dataset.id) : h.add(el.dataset.id); db.prefs = { ...db.prefs, hiddenCals: [...h], updatedAt: now() }; save(); renderSheet(); renderMain(); refreshMonth(ui.month, true); break; }
+    case 'pin-widget': try { ZeroNative.pinWidget(); } catch { } break;
     case 'install': if (deferredPrompt) { deferredPrompt.prompt(); deferredPrompt.userChoice.finally(() => { deferredPrompt = null; renderSheet(); }); } break;
     case 'show-done': ui.showDone = !ui.showDone; renderMain(); break;
     case 'qa-go': { const i = document.getElementById(el.dataset.for); if (i) submitQA(i); break; }
@@ -1244,6 +1265,6 @@ function handleLaunch() {
 
 renderMain(); renderSheet();
 handleLaunch();
-if (LS.get('signedIn', false)) { initAuth(); if (authed()) afterAuth(); }
+if (LS.get('signedIn', false)) { initAuth(); if (authed()) afterAuth(); else if (NATIVE) nativeAuth(false); }
 else initAuth();
-if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => { }));
+if (!NATIVE && 'serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => { }));
