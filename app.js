@@ -1,5 +1,5 @@
 'use strict';
-/* Zero — personal planner. Data: Google Drive (Zero/zero-data.json). Events: Google Calendar. */
+/* Zerodocs control — personal planner. Data: Google Drive (Zero/zero-data.json). Events: Google Calendar. */
 
 const CFG = {
   clientId: '308212712343-gge24ldmng1opr3vq44dllp3eflmm7lq.apps.googleusercontent.com',
@@ -201,7 +201,7 @@ function onToken(r) {
   if (r.error) { authErr = true; failWaiters(r.error); renderMain(); return; }
   const ok = google.accounts.oauth2.hasGrantedAllScopes(r,
     'https://www.googleapis.com/auth/calendar.events', 'https://www.googleapis.com/auth/drive.file');
-  if (!ok) toast('Zero needs Calendar and Drive access to sync');
+  if (!ok) toast('Zerodocs control needs Calendar and Drive access to sync');
   token = { access_token: r.access_token, exp: now() + (r.expires_in || 3600) * 1000 };
   LS.set('token', token);
   const first = !LS.get('signedIn', false);
@@ -240,7 +240,7 @@ async function afterAuth() {
   sync();
 }
 function signOut() {
-  if (!confirm('Sign out of Zero on this device? Your data stays safe in your Google Drive.')) return;
+  if (!confirm('Sign out of Zerodocs control on this device? Your data stays safe in your Google Drive.')) return;
   try { if (token && window.google) google.accounts.oauth2.revoke(token.access_token, () => { }); } catch { }
   ['token', 'signedIn', 'email', 'fileId', 'folderId', 'db', 'cals', 'events', 'dirty', 'lastSync'].forEach(LS.del);
   token = null; db = freshDb(); evCache = {}; cals = [];
@@ -608,18 +608,18 @@ function syncDot() { return `<span class="sync-dot ${({ ok: 'ok', busy: 'busy', 
 /* ---------------- shell ---------------- */
 function welcomeHTML() {
   return `<div class="welcome">
-    <div class="logo">${I.zero}</div>
-    <h1>Zero</h1>
+    <img class="brand-logo" src="logo.png" alt="Zerodocs" width="150" height="91">
+    <h1>Zerodocs control</h1>
     <p>Your calendar, tasks and projects in one quiet place. Everything is stored in your own Google Drive.</p>
     <button class="btn pri" data-act="connect-first">Connect Google</button>
-    <p style="font-size:12px">Google will ask to allow Zero to see and edit your calendar events and the files Zero creates in your Drive.</p>
+    <p style="font-size:12px">Google will ask to allow Zerodocs control to see and edit your calendar events and the files it creates in your Drive.</p>
   </div>`;
 }
 function sideHTML() {
   const open = tasks().filter(t => !t.done && t.due && t.due <= today()).length;
   const nav = (v, label, extra = '') => `<button class="nav ${ui.view === v && (v !== 'projects' || !ui.projectId) ? 'on' : ''}" data-act="nav" data-v="${v}">${label}${extra}</button>`;
   return `<nav class="side" aria-label="Main">
-    <div class="brand">Zero <button class="ib" data-act="settings" aria-label="Settings">${I.gear}</button></div>
+    <div class="brand"><img src="logo.png" alt="Zerodocs control" width="66" height="40" class="side-logo"> <button class="ib" data-act="settings" aria-label="Settings">${I.gear}</button></div>
     ${nav('home', 'Calendar')}
     ${nav('tasks', 'Tasks', open ? `<span class="c">${open}</span>` : '')}
     ${nav('repeat', 'Repeating')}
@@ -650,7 +650,7 @@ function renderMain() {
   if (!LS.get('signedIn', false)) { app.innerHTML = welcomeHTML(); return; }
   const a = document.activeElement;
   const keep = a && a.id && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && !a.closest('.sheet') ? { id: a.id, v: a.value, s: a.selectionStart, e: a.selectionEnd } : null;
-  app.innerHTML = `<div class="shell">${sideHTML()}<main class="main" id="main">${bannerHTML()}<div class="qa-top">${qaHTML('qa-d')}</div>${viewHTML()}</main>${bottomHTML()}</div>`;
+  app.innerHTML = `<div class="shell">${sideHTML()}<main class="main" id="main"><div class="mob-top"><img src="logo.png" alt="Zerodocs control" width="52" height="32" class="mob-logo"></div>${bannerHTML()}<div class="qa-top">${qaHTML('qa-d')}</div>${viewHTML()}</main>${bottomHTML()}</div>`;
   if (keep) { const el = document.getElementById(keep.id); if (el) { el.value = keep.v; el.focus(); try { el.setSelectionRange(keep.s, keep.e); } catch { } } }
 }
 function softRender() {
@@ -883,7 +883,7 @@ function taskLine(t) {
 }
 function buildMarkdown(r) {
   const L = [];
-  L.push(`# Zero review: ${r.from} → ${r.to}`, '', `Generated ${new Date().toLocaleString('en-GB')} (${TZ}).`, '');
+  L.push(`# Zerodocs control review: ${r.from} → ${r.to}`, '', `Generated ${new Date().toLocaleString('en-GB')} (${TZ}).`, '');
   L.push('## Summary');
   L.push(`- Tasks completed: ${r.done.length} (${r.plannedDone} of ${r.planned} tasks that were due in this period)`);
   L.push(`- Completed late: ${r.late.length}${r.late.length ? ` (average ${r.avgLate.toFixed(1)} days late)` : ''}`);
@@ -1061,7 +1061,7 @@ function settingsSheet() {
     <div class="field"><span class="lb">Data file</span><span style="font-size:14px">Drive › Zero › zero-data.json</span></div></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px"><button class="btn" data-act="sync-now">${I.sync} Sync now</button>${folderId ? `<a class="btn" style="text-decoration:none" target="_blank" rel="noopener" href="https://drive.google.com/drive/folders/${esc(folderId)}">Open in Drive</a>` : '<span></span>'}</div>`)}
   ${cals.length ? sec('Calendars shown', `<div class="card">${cals.filter(c => c.selected).map(c => `<div class="field"><span class="lb" style="display:flex;align-items:center;gap:8px;color:var(--tx);min-width:0"><i style="width:8px;height:8px;border-radius:4px;background:${esc(c.color || '#7AA2FF')};flex-shrink:0"></i><span dir="auto" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.name)}</span></span><button class="sw blue ${hidden.includes(c.id) ? '' : 'on'}" data-act="cal-toggle" data-id="${esc(c.id)}" role="switch" aria-checked="${!hidden.includes(c.id)}" aria-label="Show ${esc(c.name)}"></button></div>`).join('')}</div>`) : ''}
-  ${sec('Install', deferredPrompt ? '<button class="btn full" data-act="install">Install Zero on this device</button>' : '<p class="mut" style="margin:0;font-size:13px;line-height:1.6">Chrome on Android: menu ⋮ › Add to Home screen / Install app. Chrome on Mac: the install icon in the address bar, or menu › Cast, save and share › Install page as app.</p>')}
+  ${sec('Install', deferredPrompt ? '<button class="btn full" data-act="install">Install Zerodocs control on this device</button>' : '<p class="mut" style="margin:0;font-size:13px;line-height:1.6">Chrome on Android: menu ⋮ › Add to Home screen / Install app. Chrome on Mac: the install icon in the address bar, or menu › Cast, save and share › Install page as app.</p>')}
   ${sec('Quick add tips', `<p class="mut" style="margin:0;font-size:13px;line-height:1.8" dir="auto">غداً · بعد غد · الخميس · 15/11 · بعد 3 أيام · ٤م · 16:30 · عاجل أو ! · #مشروع · كل شهر / كل أسبوع / كل يوم<br>Start with @ (or اجتماع + time) to create a Google Calendar event.<br>Press N on a keyboard to jump to quick add.</p>`)}
   <button class="btn danger full" style="margin-top:26px" data-act="signout">Sign out on this device</button>`;
 }
@@ -1124,7 +1124,7 @@ async function saveReviewToDrive() {
   const [f, to] = reviewRange();
   try {
     const folder = await ensureFolder();
-    const res = await createFile(`Zero review ${f} to ${to}.md`, buildMarkdown(reviewData(f, to)), 'text/markdown', folder);
+    const res = await createFile(`Zerodocs review ${f} to ${to}.md`, buildMarkdown(reviewData(f, to)), 'text/markdown', folder);
     toast('Saved in Drive › Zero');
     if (res.webViewLink) console.log(res.webViewLink);
   } catch (e) { console.error(e); toast('Could not save to Drive'); }
@@ -1226,7 +1226,24 @@ document.addEventListener('visibilitychange', () => {
 });
 setInterval(() => { if (document.visibilityState === 'visible' && authed()) { refreshMonth(ui.month, true); if (LS.get('dirty', false)) sync(); } }, 5 * 60e3);
 
+/* launch links from home-screen shortcuts and the widget: ?v=view  ?a=add|event  ?t=taskId  ?d=YYYY-MM-DD */
+function handleLaunch() {
+  const q = new URLSearchParams(location.search);
+  if (![...q.keys()].length) return;
+  history.replaceState(null, '', location.pathname);
+  if (!LS.get('signedIn', false)) return;
+  const v = q.get('v'), a = q.get('a'), t = q.get('t'), d = q.get('d');
+  if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) { ui.sel = d; ui.month = d.slice(0, 7); ui.view = 'home'; }
+  if (v && ['home', 'tasks', 'repeat', 'projects', 'review'].includes(v)) { ui.view = v; ui.projectId = null; LS.set('view', v); }
+  if (a === 'add') ui.view = ui.view === 'review' ? 'home' : ui.view;
+  renderMain();
+  if (t && db.tasks[t] && !db.tasks[t].deleted) openSheet({ type: 'task', id: t });
+  else if (a === 'event') openEventSheet(null, { date: ui.sel });
+  else if (a === 'add') setTimeout(() => { const i = window.innerWidth >= 900 ? $('#qa-d') : $('#qa-m'); if (i) i.focus(); }, 150);
+}
+
 renderMain(); renderSheet();
+handleLaunch();
 if (LS.get('signedIn', false)) { initAuth(); if (authed()) afterAuth(); }
 else initAuth();
 if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => { }));

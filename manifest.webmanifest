@@ -1,6 +1,6 @@
 {
-  "name": "Zero",
-  "short_name": "Zero",
+  "name": "Zerodocs control",
+  "short_name": "Zerodocs",
   "description": "Calendar, tasks and projects in one quiet place.",
   "start_url": "./",
   "scope": "./",
@@ -8,9 +8,74 @@
   "background_color": "#0B0B0C",
   "theme_color": "#0B0B0C",
   "icons": [
-    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
-    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "id": "./",
+  "shortcuts": [
+    {
+      "name": "New task",
+      "short_name": "Add",
+      "url": "./?a=add",
+      "icons": [
+        {
+          "src": "sc-add.png",
+          "sizes": "96x96",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Today",
+      "short_name": "Today",
+      "url": "./?v=home",
+      "icons": [
+        {
+          "src": "sc-today.png",
+          "sizes": "96x96",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Tasks",
+      "short_name": "Tasks",
+      "url": "./?v=tasks",
+      "icons": [
+        {
+          "src": "sc-tasks.png",
+          "sizes": "96x96",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Review",
+      "short_name": "Review",
+      "url": "./?v=review",
+      "icons": [
+        {
+          "src": "sc-review.png",
+          "sizes": "96x96",
+          "type": "image/png"
+        }
+      ]
+    }
   ]
 }
