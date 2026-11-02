@@ -64,19 +64,36 @@ const I = {
   link: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>',
   trash: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>',
   sync: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 0 1-15.5 6.2"/><path d="M3 12A9 9 0 0 1 18.5 5.8"/><path d="M18 2v4h-4"/><path d="M6 22v-4h4"/></svg>',
+  img: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></svg>',
   zero: '<svg width="28" height="28" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="17" fill="none" stroke="#EDEDED" stroke-width="7"/></svg>'
 };
 
 /* ---------------- data ---------------- */
-const freshDb = () => ({ v: 1, tasks: {}, projects: {}, log: {}, prefs: { updatedAt: 0 } });
+const freshDb = () => ({ v: 1, tasks: {}, projects: {}, notes: {}, log: {}, prefs: { updatedAt: 0 } });
 let db = LS.get('db', null) || freshDb();
 if (!db.prefs) db.prefs = { updatedAt: 0 };
+if (!db.notes) db.notes = {};
+
+/* the five sections of life/work; every task and project can belong to one */
+const AREAS = [
+  { id: 'personal', name: 'Personal', color: '#8FD19E', al: ['personal', 'شخصي', 'شخصية'] },
+  { id: 'housing', name: 'Housing', color: '#E6C07B', al: ['housing', 'سكن', 'الإسكان', 'الاسكان', 'اسكان', 'إسكان'] },
+  { id: 'zerodocs', name: 'Zerodocs', color: '#7AA2FF', al: ['zerodocs', 'زيرودوكس', 'زيرو_دوكس'] },
+  { id: 'outsource', name: 'Outsource', color: '#C59BFF', al: ['outsource', 'اوتسورس', 'أوتسورس', 'آوتسورس'] },
+  { id: 'dorba', name: 'Dorba', color: '#FF8F8F', al: ['dorba', 'دربة', 'دربه'] }
+];
+const areaOf = id => AREAS.find(a => a.id === id) || null;
+const findArea = s => { const n = String(s || '').toLowerCase(); return AREAS.find(a => a.al.includes(n)) || null; };
+const taskArea = t => t.areaId || (t.projectId && db.projects[t.projectId] && db.projects[t.projectId].areaId) || null;
+const notes = () => Object.values(db.notes).filter(n => !n.deleted).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+const adot = a => a ? `<i class="adot" style="background:${a.color}"></i>` : '';
 
 function persist() { LS.set('db', db); }
 function save() { persist(); LS.set('dirty', true); scheduleSync(); }
 
 const tasks = () => Object.values(db.tasks).filter(t => !t.deleted);
 const projects = () => Object.values(db.projects).filter(p => !p.deleted).sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+const areaProjects = aid => projects().filter(p => (p.areaId || null) === (aid || null));
 const projName = id => (id && db.projects[id] && !db.projects[id].deleted ? db.projects[id].name : '');
 const stageName = (pid, sid) => { const p = db.projects[pid]; const s = p && (p.stages || []).find(x => x.id === sid); return s ? s.name : ''; };
 const isOverdue = t => !t.done && t.due && t.due < today();
@@ -93,15 +110,15 @@ function addLog(type, t, extra = {}) {
   const id = uid();
   db.log[id] = {
     id, at: new Date().toISOString(), type, taskId: t.id, title: t.title,
-    project: projName(t.projectId), stage: stageName(t.projectId, t.stageId),
+    project: projName(t.projectId), stage: stageName(t.projectId, t.stageId), projectId: t.projectId || null, areaId: taskArea(t),
     due: t.due || null, repeat: t.repeat ? t.repeat.freq : null, urgent: !!t.urgent,
     ...extra, updatedAt: now()
   };
 }
 function newTask(p = {}) {
   const t = {
-    id: uid(), title: '', notes: '', due: null, time: null, urgent: false, projectId: null, stageId: null,
-    subtasks: [], links: [], repeat: null, done: false, doneAt: null, postponed: 0,
+    id: uid(), title: '', notes: '', due: null, time: null, urgent: false, areaId: null, projectId: null, stageId: null,
+    subtasks: [], links: [], images: [], repeat: null, done: false, doneAt: null, postponed: 0,
     createdAt: new Date().toISOString(), updatedAt: now(), deleted: false, ...p
   };
   db.tasks[t.id] = t;
@@ -152,14 +169,19 @@ function toggleDone(t) {
     upd(t, { done: false, doneAt: null });
   }
 }
-function newProject(name) {
-  const p = { id: uid(), name, deadline: null, stages: [], createdAt: new Date().toISOString(), updatedAt: now(), deleted: false };
+function newProject(name, areaId = null) {
+  const p = { id: uid(), name, areaId: areaId || null, deadline: null, stages: [], createdAt: new Date().toISOString(), updatedAt: now(), deleted: false };
   db.projects[p.id] = p; save(); return p;
 }
-function findProject(name) {
+function findProject(name, areaId) {
   const n = name.toLowerCase().replace(/[\s_]+/g, '');
-  return projects().find(p => p.name.toLowerCase().replace(/\s+/g, '') === n) ||
-    projects().find(p => p.name.toLowerCase().replace(/\s+/g, '').startsWith(n));
+  const k = p => p.name.toLowerCase().replace(/\s+/g, '');
+  const pool = areaId ? [...areaProjects(areaId), ...projects()] : projects();
+  return pool.find(p => k(p) === n) || pool.find(p => k(p).startsWith(n));
+}
+function newNote(text = '') {
+  const n = { id: uid(), text, createdAt: new Date().toISOString(), updatedAt: now(), deleted: false };
+  db.notes[n.id] = n; save(); return n;
 }
 
 /* ---------------- merge ---------------- */
@@ -173,6 +195,7 @@ function merge(l, r) {
     v: 1,
     tasks: mergeMap(l.tasks, r.tasks),
     projects: mergeMap(l.projects, r.projects),
+    notes: mergeMap(l.notes, r.notes),
     log: mergeMap(l.log, r.log),
     prefs: ((r.prefs && r.prefs.updatedAt) || 0) > ((l.prefs && l.prefs.updatedAt) || 0) ? r.prefs : (l.prefs || { updatedAt: 0 })
   };
@@ -261,7 +284,7 @@ function signOut() {
   if (!confirm('Sign out of Zerodocs control on this device? Your data stays safe in your Google Drive.')) return;
   try { if (NATIVE) ZeroNative.signOut(); } catch { }
   try { if (token && window.google) google.accounts.oauth2.revoke(token.access_token, () => { }); } catch { }
-  ['token', 'signedIn', 'email', 'fileId', 'folderId', 'db', 'cals', 'events', 'dirty', 'lastSync'].forEach(LS.del);
+  ['token', 'signedIn', 'email', 'fileId', 'folderId', 'imgFolderId', 'db', 'cals', 'events', 'dirty', 'lastSync'].forEach(LS.del);
   token = null; db = freshDb(); evCache = {}; cals = [];
   ui.sheet = null; renderSheet(); renderMain();
 }
@@ -310,6 +333,114 @@ async function writeRemote(id, txt) {
   await gfetch(`${UPL}/files/${id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json; charset=UTF-8' }, body: txt });
 }
 
+/* ---------------- images (Drive › Zero › images, cached on the device) ---------------- */
+const IDB = {
+  db: null,
+  open() {
+    if (this.db) return Promise.resolve(this.db);
+    return new Promise((res, rej) => {
+      const r = indexedDB.open('zero-img', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('b');
+      r.onsuccess = () => { this.db = r.result; res(this.db); };
+      r.onerror = () => rej(r.error);
+    });
+  },
+  async get(k) { const d = await this.open(); return new Promise(res => { const q = d.transaction('b').objectStore('b').get(k); q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); }); },
+  async put(k, v) { const d = await this.open(); return new Promise(res => { const tx = d.transaction('b', 'readwrite'); tx.objectStore('b').put(v, k); tx.oncomplete = () => res(true); tx.onerror = () => res(false); }); },
+  async del(k) { const d = await this.open(); return new Promise(res => { const tx = d.transaction('b', 'readwrite'); tx.objectStore('b').delete(k); tx.oncomplete = () => res(true); tx.onerror = () => res(false); }); }
+};
+const imgURL = {};
+async function imgSrc(id) {
+  if (imgURL[id]) return imgURL[id];
+  let b = null;
+  try { b = await IDB.get(id); } catch { }
+  if (!b && !id.startsWith('l_') && authed() && navigator.onLine) {
+    try { const r = await gfetch(`${DRV}/files/${id}?alt=media`); b = await r.blob(); IDB.put(id, b).catch(() => { }); } catch (e) { console.warn(e); }
+  }
+  if (!b) return null;
+  return (imgURL[id] = URL.createObjectURL(b));
+}
+function hydrateImgs(root = document) {
+  root.querySelectorAll('img[data-img]').forEach(async el => {
+    if (el.dataset.done) return; el.dataset.done = '1';
+    const src = await imgSrc(el.dataset.img);
+    if (src) el.src = src; else el.closest('.ph') && el.closest('.ph').classList.add('missing');
+  });
+}
+async function compressImage(file) {
+  let src, w, h;
+  try { src = await createImageBitmap(file); w = src.width; h = src.height; }
+  catch {
+    src = await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = URL.createObjectURL(file); });
+    w = src.naturalWidth; h = src.naturalHeight;
+  }
+  const k = Math.min(1, 1600 / Math.max(w, h));
+  const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(w * k)); c.height = Math.max(1, Math.round(h * k));
+  c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+  return new Promise(res => c.toBlob(b => res(b), 'image/jpeg', 0.82));
+}
+async function addImages(t, files) {
+  let n = 0;
+  for (const f of files) {
+    try {
+      const b = await compressImage(f); if (!b) continue;
+      const id = 'l_' + uid(); await IDB.put(id, b);
+      t.images = [...(t.images || []), { id, local: true, at: now() }]; t.updatedAt = now(); n++;
+    } catch (e) { console.error(e); }
+  }
+  if (!n) { toast('Could not add that image'); return; }
+  save(); renderSheet(); renderMain(); uploadImages();
+}
+async function ensureImgFolder() {
+  let id = LS.get('imgFolderId', null); if (id) return id;
+  const parent = await ensureFolder();
+  const f = await findOne(`name='images' and '${parent}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+  if (f) id = f.id;
+  else {
+    const r = await gfetch(`${DRV}/files?fields=id`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'images', parents: [parent], mimeType: 'application/vnd.google-apps.folder' }) });
+    id = (await r.json()).id;
+  }
+  LS.set('imgFolderId', id); return id;
+}
+async function uploadBlob(name, blob, parent) {
+  const bd = 'zero' + uid();
+  const meta = JSON.stringify({ name, parents: [parent], mimeType: 'image/jpeg' });
+  const body = new Blob([`--${bd}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${bd}\r\nContent-Type: image/jpeg\r\n\r\n`, blob, `\r\n--${bd}--`]);
+  const r = await gfetch(`${UPL}/files?uploadType=multipart&fields=id`, { method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + bd }, body });
+  return (await r.json()).id;
+}
+let uploadingImgs = false;
+async function uploadImages() {
+  if (uploadingImgs || !authed() || !navigator.onLine) return;
+  const pending = tasks().filter(t => (t.images || []).some(i => i.local));
+  if (!pending.length) return;
+  uploadingImgs = true;
+  try {
+    const folder = await ensureImgFolder();
+    for (const t of pending) {
+      for (const im of [...(t.images || [])]) {
+        if (!im.local) continue;
+        const b = await IDB.get(im.id);
+        if (!b) continue;
+        const id = await uploadBlob(`${(t.title || 'task').slice(0, 40)} ${im.id}.jpg`, b, folder);
+        await IDB.put(id, b);
+        if (imgURL[im.id]) imgURL[id] = imgURL[im.id];
+        const cur = db.tasks[t.id];
+        cur.images = (cur.images || []).map(x => x.id === im.id ? { id, at: x.at } : x); cur.updatedAt = now();
+        IDB.del(im.id); save();
+        if (ui.sheet && ui.sheet.type === 'image' && ui.sheet.img === im.id) ui.sheet.img = id;
+      }
+    }
+    if (ui.sheet && (ui.sheet.type === 'task' || ui.sheet.type === 'image')) renderSheet();
+  } catch (e) { console.error(e); }
+  finally { uploadingImgs = false; }
+}
+function removeImage(t, id) {
+  t.images = (t.images || []).filter(x => x.id !== id); t.updatedAt = now(); save();
+  if (id.startsWith('l_')) IDB.del(id);
+  else if (authed() && navigator.onLine) gfetch(`${DRV}/files/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) }).catch(() => { });
+}
+
 /* ---------------- sync ---------------- */
 let syncing = false, again = false, syncTimer = null, syncState = 'idle';
 function setSync(s) {
@@ -338,6 +469,7 @@ async function sync(retried) {
     LS.set('dirty', false); LS.set('lastSync', now());
     setSync('ok');
     softRender();
+    uploadImages();
   } catch (e) {
     console.error(e); setSync('err');
   } finally {
@@ -489,10 +621,10 @@ const WD = [
 ];
 function parseQuick(raw) {
   let s = ' ' + normDigits(raw).replace(/\s+/g, ' ').trim() + ' ';
-  const r = { title: '', due: null, time: null, urgent: false, project: null, repeat: null, isEvent: false };
+  const r = { title: '', due: null, time: null, urgent: false, area: null, project: null, repeat: null, isEvent: false };
   const take = (re, fn) => { const m = s.match(re); if (m) { s = s.replace(m[0], ' '); fn(m); return true; } return false; };
   if (/^\s*@/.test(s)) { r.isEvent = true; s = s.replace('@', ' '); }
-  take(/\s#([^\s#]+)/, m => { r.project = m[1].replace(/_/g, ' '); });
+  for (let k = 0; k < 2; k++) take(/\s#([^\s#]+)/, m => { const a = findArea(m[1]); if (a) r.area = a.id; else r.project = m[1].replace(/_/g, ' '); });
   take(/\s(!|عاجل|مستعجل|urgent)(?=\s)/i, () => { r.urgent = true; });
   take(/\s(كل يوم|يومياً|يوميا|daily|every day)(?=\s)/i, () => { r.repeat = { freq: 'daily', interval: 1 }; }) ||
     take(/\s(كل أسبوع|كل اسبوع|أسبوعياً|اسبوعياً|أسبوعيا|اسبوعيا|weekly|every week)(?=\s)/i, () => { r.repeat = { freq: 'weekly', interval: 1 }; }) ||
@@ -537,7 +669,8 @@ function qaPreview(text) {
   if (p.time) c.push(`<span class="chip">${esc(p.time)}</span>`);
   if (p.urgent) c.push('<span class="chip or">Urgent</span>');
   if (p.repeat) c.push(`<span class="chip">${I.rep} ${repLabel(p.repeat)}</span>`);
-  if (p.project) { const f = findProject(p.project); c.push(`<span class="chip">${f ? esc(f.name) : 'New project: ' + esc(p.project)}</span>`); }
+  if (p.area) { const a = areaOf(p.area); c.push(`<span class="chip">${adot(a)}${esc(a.name)}</span>`); }
+  if (p.project) { const f = findProject(p.project, p.area || qaCtx().areaId); c.push(`<span class="chip">${f ? esc(f.name) : 'New project: ' + esc(p.project)}</span>`); }
   return c.length > 0 ? c.join('') : '';
 }
 function quickAdd(text, ctx = {}) {
@@ -547,23 +680,37 @@ function quickAdd(text, ctx = {}) {
     openEventSheet(null, { title: p.title, date: p.due || ui.sel || today(), start: p.time || '09:00' });
     return true;
   }
-  let projectId = ctx.projectId || null;
-  if (p.project) { const f = findProject(p.project); projectId = f ? f.id : newProject(p.project).id; }
+  let areaId = p.area || ctx.areaId || null;
+  let projectId = p.area && ctx.projectId && db.projects[ctx.projectId] && db.projects[ctx.projectId].areaId !== p.area ? null : (ctx.projectId || null);
+  if (p.project) { const f = findProject(p.project, areaId); projectId = f ? f.id : newProject(p.project, areaId).id; }
+  if (projectId && db.projects[projectId]) { const pa = db.projects[projectId].areaId; if (pa) areaId = pa; else if (areaId) upd(db.projects[projectId], { areaId }); }
   let repeat = p.repeat || ctx.repeat || null;
   let due = p.due || ctx.due || null;
   if (repeat && !due) due = today();
   if (repeat && repeat.freq === 'monthly') repeat = { ...repeat, day: pd(due).getDate() };
-  newTask({ title: p.title, due, time: p.time, urgent: p.urgent, projectId, stageId: ctx.stageId || null, repeat });
+  newTask({ title: p.title, due, time: p.time, urgent: p.urgent, areaId, projectId, stageId: projectId === ctx.projectId ? ctx.stageId || null : null, repeat });
   toast(due ? 'Added · ' + relDay(due) : 'Added');
   return true;
 }
 
 /* ---------------- UI state ---------------- */
+const VIEWS = ['home', 'notes', 'tasks', ...AREAS.map(a => a.id), 'review', 'project'];
+const TABS = [['home', 'Home'], ['notes', 'Notes'], ['tasks', 'Tasks'], ...AREAS.map(a => [a.id, a.name]), ['review', 'Review']];
 const ui = {
-  view: LS.get('view', 'home'), month: today().slice(0, 7), sel: today(), projectId: null,
-  sheet: null, qa: '', rDays: 14, rFrom: null, rTo: null, rEvents: null, rKey: '', showDone: false
+  view: LS.get('view', 'home'), month: today().slice(0, 7), sel: today(), projectId: LS.get('projectId', null),
+  sheet: null, qa: '', rDays: 14, rFrom: null, rTo: null, rEvents: null, rKey: '', showDone: false,
+  tFilter: 'all', nq: '', rArea: '', rProj: ''
 };
-if (!['home', 'tasks', 'repeat', 'projects', 'review'].includes(ui.view)) ui.view = 'home';
+if (ui.view === 'repeat') { ui.view = 'tasks'; ui.tFilter = 'repeat'; }
+if (!VIEWS.includes(ui.view)) ui.view = 'home';
+if (ui.view === 'project' && !(ui.projectId && db.projects[ui.projectId] && !db.projects[ui.projectId].deleted)) ui.view = 'home';
+/* what the quick-add bar should attach new tasks to, based on where you are */
+function qaCtx() {
+  if (ui.view === 'project' && ui.projectId && db.projects[ui.projectId]) return { projectId: ui.projectId, areaId: db.projects[ui.projectId].areaId || null };
+  if (areaOf(ui.view)) return { areaId: ui.view };
+  if (ui.view === 'tasks' && ui.tFilter === 'repeat') return { repeat: { freq: 'monthly', interval: 1 } };
+  return {};
+}
 
 /* ---------------- rendering helpers ---------------- */
 function buildIndex(start, end, evs) {
@@ -590,12 +737,15 @@ function buildIndex(start, end, evs) {
 }
 function taskMeta(t, o = {}) {
   const m = [];
-  const pn = projName(t.projectId);
-  if (pn) m.push(esc(pn + (t.stageId && stageName(t.projectId, t.stageId) ? ' › ' + stageName(t.projectId, t.stageId) : '')));
+  const a = areaOf(taskArea(t));
+  if (a && !o.inArea) m.push(`<span class="achip">${adot(a)}${esc(a.name)}</span>`);
+  const pn = o.inProject ? '' : projName(t.projectId);
+  if (pn) m.push(`<span dir="auto">${esc(pn + (t.stageId && stageName(t.projectId, t.stageId) ? ' › ' + stageName(t.projectId, t.stageId) : ''))}</span>`);
+  else if (o.inProject && t.stageId && stageName(t.projectId, t.stageId) && o.showStage) m.push(esc(stageName(t.projectId, t.stageId)));
   const st = t.subtasks || [];
   if (st.length) m.push(`${st.filter(s => s.done).length}/${st.length}`);
   if (t.repeat) m.push(`<span style="display:inline-flex;align-items:center;gap:3px">${I.rep}${repLabel(t.repeat)}</span>`);
-  if (t.notes && t.notes.trim()) m.push(I.note);
+  if ((t.notes && t.notes.trim()) || (t.images || []).length) m.push((t.images || []).length ? `<span style="display:inline-flex;align-items:center;gap:3px">${I.note}${(t.images || []).length}</span>` : I.note);
   if (o.date) m.push(esc(relDay(o.date)));
   else if (!o.hideDue && t.due) {
     const lbl = esc(relDay(t.due) + (t.time ? ' ' + t.time : ''));
@@ -620,56 +770,94 @@ function evHTML(e) {
   return `<button class="ev" data-act="open-ev" data-k="${esc(evKey(e))}"><span class="bar k-ev"></span><span class="b"><span class="tt" dir="auto">${esc(e.title)}</span><span class="mt" dir="auto">${esc(meta.join(' · '))}</span></span></button>`;
 }
 function sec(title, body, o = {}) {
-  return `<section class="sec"><div class="sec-h"><h2 class="${o.cls || ''}">${esc(title)}</h2>${o.right || ''}</div>${body}</section>`;
+  return `<section class="sec"><div class="sec-h"><h2 class="${o.cls || ''}">${o.html ? title : esc(title)}</h2>${o.right || ''}</div>${body}</section>`;
+}
+/* an add-row that works with every keyboard: Enter submits the form, and there is always a visible Add button */
+function addForm(form, ph, o = {}) {
+  return `<form class="inline-add ${o.cls || ''}" data-form="${form}" ${o.data || ''} autocomplete="off">${I.plusS}<input id="${o.id || 'f-' + form}" name="v" dir="auto" enterkeyhint="done" placeholder="${esc(ph)}" ${o.type ? `type="${o.type}" inputmode="${o.type}"` : ''}><button class="ia-go" type="submit">Add</button></form>`;
 }
 function syncDot() { return `<span class="sync-dot ${({ ok: 'ok', busy: 'busy', err: 'err' }[syncState] || '')}"></span>`; }
+function sortOpen(list) { return [...list.filter(t => !t.done).sort(byDue), ...list.filter(t => t.done).sort((a, b) => ((a.doneAt || '') < (b.doneAt || '') ? 1 : -1))]; }
+function projStats(p) {
+  const ts = tasks().filter(t => t.projectId === p.id);
+  const done = ts.filter(t => t.done).length;
+  const overdue = ts.filter(isOverdue).length;
+  return { total: ts.length, done, open: ts.length - done, overdue, pct: ts.length ? Math.round(done / ts.length * 100) : 0 };
+}
+function pcardHTML(p) {
+  const s = projStats(p);
+  return `<button class="card pcard" data-act="open-project" data-id="${esc(p.id)}">
+    <span style="display:flex;justify-content:space-between;gap:10px;align-items:baseline"><span class="nm" dir="auto">${esc(p.name)}</span><span class="mut" style="font-size:12px;white-space:nowrap">${p.deadline ? 'Due ' + esc(shortDay(p.deadline)) : ''}</span></span>
+    <span class="prog"><i style="width:${s.pct}%"></i></span>
+    <span class="mut" style="font-size:12px">${s.done} of ${s.total} done${s.overdue ? ` · <span class="or">${s.overdue} overdue</span>` : ''}${(p.stages || []).length ? ' · ' + p.stages.length + ' stages' : ''}</span></button>`;
+}
 
 /* ---------------- shell ---------------- */
 function welcomeHTML() {
   return `<div class="welcome">
     <img class="brand-logo" src="logo.png" alt="Zerodocs" width="150" height="91">
     <h1>Zerodocs control</h1>
-    <p>Your calendar, tasks and projects in one quiet place. Everything is stored in your own Google Drive.</p>
+    <p>Your calendar, tasks, projects and notes in one quiet place. Everything is stored in your own Google Drive.</p>
     <button class="btn pri" data-act="connect-first">Connect Google</button>
     <p style="font-size:12px">Google will ask to allow Zerodocs control to see and edit your calendar events and the files it creates in your Drive.</p>
   </div>`;
 }
+function openCount(aid) { const td = today(); return tasks().filter(t => !t.done && t.due && t.due <= td && (aid === undefined || taskArea(t) === aid)).length; }
+function curTab() { return ui.view === 'project' ? ((db.projects[ui.projectId] || {}).areaId || 'tasks') : ui.view; }
 function sideHTML() {
-  const open = tasks().filter(t => !t.done && t.due && t.due <= today()).length;
-  const nav = (v, label, extra = '') => `<button class="nav ${ui.view === v && (v !== 'projects' || !ui.projectId) ? 'on' : ''}" data-act="nav" data-v="${v}">${label}${extra}</button>`;
+  const cur = curTab();
+  const nav = (v, label, extra = '', dot = '') => `<button class="nav ${cur === v ? 'on' : ''}" data-act="nav" data-v="${v}"><span style="display:flex;align-items:center;gap:9px;min-width:0">${dot}${label}</span>${extra}</button>`;
+  const c = n => n ? `<span class="c">${n}</span>` : '';
   return `<nav class="side" aria-label="Main">
     <div class="brand"><img src="logo.png" alt="Zerodocs control" width="66" height="40" class="side-logo"> <button class="ib" data-act="settings" aria-label="Settings">${I.gear}</button></div>
-    ${nav('home', 'Calendar')}
-    ${nav('tasks', 'Tasks', open ? `<span class="c">${open}</span>` : '')}
-    ${nav('repeat', 'Repeating')}
+    ${nav('home', 'Home')}
+    ${nav('notes', 'Notes', c(notes().length))}
+    ${nav('tasks', 'Tasks', c(openCount()))}
+    <div class="grp">SECTIONS</div>
+    ${AREAS.map(a => nav(a.id, esc(a.name), c(openCount(a.id)), adot(a))).join('')}
+    <div class="grp"></div>
     ${nav('review', 'Review')}
-    <div class="grp">PROJECTS</div>
-    ${projects().map(p => `<button class="nav ${ui.view === 'projects' && ui.projectId === p.id ? 'on' : ''}" data-act="open-project" data-id="${esc(p.id)}"><span dir="auto" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name)}</span></button>`).join('')}
-    <button class="nav ${ui.view === 'projects' && !ui.projectId ? 'on' : ''}" data-act="nav" data-v="projects">+ New project</button>
     <div class="foot">${syncDot()}<span style="overflow:hidden;text-overflow:ellipsis">${esc(LS.get('email', '') || 'Not connected')}</span></div>
   </nav>`;
 }
+function qaPlaceholder() {
+  if (ui.view === 'notes') return 'Write a quick note…';
+  const c = qaCtx();
+  if (c.projectId) return `Add to ${projName(c.projectId)}…`;
+  if (c.areaId) return `Add to ${areaOf(c.areaId).name}… e.g. متابعة العقد غداً`;
+  if (c.repeat) return 'New repeating… e.g. دفع الإيجار كل شهر 1/12';
+  return 'Add… e.g. مونتاج غداً ٤م #zerodocs';
+}
 function qaHTML(id) {
-  return `<label class="qa"><span class="sr">Quick add</span>
-    <input id="${id}" data-enter="qa" autocomplete="off" enterkeyhint="done" placeholder="Add… e.g. مونتاج غداً ٤م #promo" value="${esc(ui.qa)}">
-    <button class="go" data-act="qa-go" data-for="${id}" aria-label="Add">${I.plus}</button></label>
-    <div class="qa-prev" id="${id}-prev">${qaPreview(ui.qa)}</div>`;
+  return `<form class="qa" data-form="qa" autocomplete="off"><label class="sr" for="${id}">Quick add</label>
+    <input id="${id}" data-enter="qa" dir="auto" enterkeyhint="done" placeholder="${esc(qaPlaceholder())}" value="${esc(ui.qa)}">
+    <button class="go" type="submit" aria-label="Add">${I.plus}</button></form>
+    <div class="qa-prev" id="${id}-prev">${ui.view === 'notes' ? '' : qaPreview(ui.qa)}</div>`;
 }
 function bottomHTML() {
-  const tab = (v, l) => `<button class="${ui.view === v ? 'on' : ''}" data-act="nav" data-v="${v}">${l}</button>`;
-  return `<nav class="bottom" aria-label="Main">${qaHTML('qa-m')}<div class="tabs">${tab('home', 'Home')}${tab('tasks', 'Tasks')}${tab('repeat', 'Repeat')}${tab('projects', 'Projects')}${tab('review', 'Review')}</div></nav>`;
+  const cur = curTab();
+  const tab = ([v, l]) => { const a = areaOf(v); return `<button class="${cur === v ? 'on' : ''}" data-act="nav" data-v="${v}" ${cur === v ? 'aria-current="page"' : ''}>${a ? adot(a) : ''}${l}</button>`; };
+  return `<nav class="bottom" aria-label="Main">${qaHTML('qa-m')}<div class="tabs" id="tabs">${TABS.map(tab).join('')}</div></nav>`;
 }
 function bannerHTML() {
   if (!navigator.onLine) return `<div class="card" style="padding:10px 14px;margin-bottom:14px;font-size:13px;color:var(--mut)">Offline — your changes are saved on this device and will sync when you're back online.</div>`;
   if (!authed()) return `<div class="card" style="padding:8px 8px 8px 14px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px"><span class="mut">Google session paused.</span><button class="pill" data-act="connect">Reconnect</button></div>`;
   return '';
 }
+let tabsScroll = 0;
 function renderMain() {
   const app = $('#app');
   if (!LS.get('signedIn', false)) { app.innerHTML = welcomeHTML(); return; }
   const a = document.activeElement;
   const keep = a && a.id && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && !a.closest('.sheet') ? { id: a.id, v: a.value, s: a.selectionStart, e: a.selectionEnd } : null;
-  app.innerHTML = `<div class="shell">${sideHTML()}<main class="main" id="main"><div class="mob-top"><img src="logo.png" alt="Zerodocs control" width="52" height="32" class="mob-logo"></div>${bannerHTML()}<div class="qa-top">${qaHTML('qa-d')}</div>${viewHTML()}</main>${bottomHTML()}</div>`;
+  const ot = $('#tabs'); if (ot) tabsScroll = ot.scrollLeft;
+  app.innerHTML = `<div class="shell">${sideHTML()}<main class="main" id="main"><div class="mob-top"><img src="logo.png" alt="Zerodocs control" width="52" height="32" class="mob-logo"><button class="ib" data-act="settings" aria-label="Settings">${I.gear}</button></div>${bannerHTML()}<div class="qa-top">${qaHTML('qa-d')}</div>${viewHTML()}</main>${bottomHTML()}</div>`;
+  const tb = $('#tabs');
+  if (tb) {
+    tb.scrollLeft = tabsScroll;
+    const on = tb.querySelector('.on');
+    if (on && (on.offsetLeft < tb.scrollLeft || on.offsetLeft + on.offsetWidth > tb.scrollLeft + tb.clientWidth)) tb.scrollLeft = on.offsetLeft - (tb.clientWidth - on.offsetWidth) / 2;
+  }
   if (keep) { const el = document.getElementById(keep.id); if (el) { el.value = keep.v; el.focus(); try { el.setSelectionRange(keep.s, keep.e); } catch { } } }
 }
 function softRender() {
@@ -678,10 +866,11 @@ function softRender() {
   renderMain(); if (ui.sheet && ui.sheet.type !== 'event') renderSheet();
 }
 function viewHTML() {
+  if (areaOf(ui.view)) return areaView(areaOf(ui.view));
   switch (ui.view) {
+    case 'notes': return notesView();
     case 'tasks': return tasksView();
-    case 'repeat': return repeatView();
-    case 'projects': return ui.projectId && db.projects[ui.projectId] && !db.projects[ui.projectId].deleted ? projectView(db.projects[ui.projectId]) : projectsView();
+    case 'project': return ui.projectId && db.projects[ui.projectId] && !db.projects[ui.projectId].deleted ? projectView(db.projects[ui.projectId]) : homeView();
     case 'review': return reviewView();
     default: return homeView();
   }
@@ -722,7 +911,6 @@ function homeView() {
           ${notThisMonth ? '<button class="pill" data-act="today">Today</button>' : ''}
           <button class="ib" data-act="prev" aria-label="Previous month">${I.l}</button>
           <button class="ib" data-act="next" aria-label="Next month">${I.r}</button>
-          <button class="ib mob" data-act="settings" aria-label="Settings">${I.gear}</button>
         </div>
       </div>
       <div class="cal-wd">${['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'].map(w => `<span><span class="wd-s">${w[0]}</span><span class="wd-l">${w}</span></span>`).join('')}</div>
@@ -739,7 +927,36 @@ function homeView() {
     </div>
   </div>`;
 }
+function noteTitle(n) { const l = (n.text || '').trim().split('\n'); return { t: l[0] || 'Empty note', p: l.slice(1).join('\n').trim() }; }
+function notesView() {
+  const list = notes();
+  const q = ui.nq.trim().toLowerCase();
+  const shown = q ? list.filter(n => (n.text || '').toLowerCase().includes(q)) : list;
+  let html = `<div class="narrow"><div class="hdr"><div><div class="sub">${list.length} ${list.length === 1 ? 'note' : 'notes'}</div><h1>Notes</h1></div><button class="pill" data-act="new-note">+ New note</button></div>`;
+  if (list.length > 5) html += `<input id="note-q" class="tin" dir="auto" type="search" placeholder="Search notes" value="${esc(ui.nq)}" style="margin-bottom:12px">`;
+  html += shown.map(n => {
+    const { t, p } = noteTitle(n);
+    return `<button class="card note-row" data-act="open-note" data-id="${esc(n.id)}"><span class="t" dir="auto">${esc(t)}</span>${p ? `<span class="p" dir="auto">${esc(p.slice(0, 240))}</span>` : ''}<span class="d">${esc(new Date(n.updatedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</span></button>`;
+  }).join('');
+  if (!list.length) html += '<div class="empty" style="padding-top:20px">No notes yet. Tap “New note”, or write one in the bar below.</div>';
+  else if (!shown.length) html += '<div class="empty">No notes match.</div>';
+  return html + '</div>';
+}
 function tasksView() {
+  const seg = (v, l) => `<button class="${ui.tFilter === v ? 'on' : ''}" data-act="tfilter" data-v="${v}" aria-pressed="${ui.tFilter === v}">${l}</button>`;
+  let html = `<div class="narrow"><div class="hdr"><div><div class="sub">Everything, from every section</div><h1>Tasks</h1></div></div>
+    <div class="seg" role="group" aria-label="Filter" style="margin-bottom:6px">${seg('all', 'By date')}${seg('repeat', 'Repeating')}</div>`;
+  if (ui.tFilter === 'repeat') {
+    const list = tasks().filter(t => t.repeat).sort(byDue);
+    const groups = { daily: [], weekly: [], monthly: [], yearly: [] };
+    list.forEach(t => (groups[t.repeat.freq] || groups.monthly).push(t));
+    html += `<p class="mut" style="font-size:12px;margin:10px 2px 0">New items here repeat monthly. Write كل يوم / كل أسبوع / كل سنة to change it.</p>`;
+    [['daily', 'Daily'], ['weekly', 'Weekly'], ['monthly', 'Monthly'], ['yearly', 'Yearly']].forEach(([k, n]) => {
+      if (groups[k].length) html += sec(n, groups[k].map(t => taskHTML(t)).join(''));
+    });
+    if (!list.length) html += '<div class="empty" style="padding-top:20px">No repeating tasks yet.</div>';
+    return html + '</div>';
+  }
   const td = today(), tm = addD(td, 1), wk = addD(td, 7);
   const open = tasks().filter(t => !t.done).sort(byDue);
   const groups = [
@@ -750,71 +967,58 @@ function tasksView() {
     ['Later', open.filter(t => t.due > wk)],
     ['Anytime', open.filter(t => !t.due)]
   ];
-  let html = `<div class="narrow"><div class="hdr"><div><div class="sub">${open.length} open</div><h1>Tasks</h1></div><button class="ib mob" data-act="settings" aria-label="Settings">${I.gear}</button></div>`;
   let any = false;
   groups.forEach(([n, list, cls]) => { if (list.length) { any = true; html += sec(n, list.map(t => taskHTML(t, { hideDue: n === 'Today' })).join(''), { cls, right: `<span class="mut">${list.length}</span>` }); } });
-  if (!any) html += '<div class="empty" style="padding-top:20px">All clear. Add a task below.</div>';
+  if (!any) html += '<div class="empty" style="padding-top:20px">All clear. Add a task below, or inside a section.</div>';
+  const loose = areaProjects(null);
+  if (loose.length) html += sec('Projects without a section', `<p class="mut" style="font-size:12px;margin:0 2px 10px">Open one and choose its section so it shows up in the right tab.</p><div class="plist">${loose.map(pcardHTML).join('')}</div>`);
   const since = addD(td, -14);
   const done = tasks().filter(t => t.done && t.doneAt && isoDay(t.doneAt) >= since).sort((a, b) => (a.doneAt < b.doneAt ? 1 : -1));
-  if (done.length) {
-    html += `<section class="sec"><div class="sec-h"><h2>Completed · last 14 days</h2><button class="pill" data-act="show-done">${ui.showDone ? 'Hide' : 'Show ' + done.length}</button></div>${ui.showDone ? done.map(t => taskHTML(t)).join('') : ''}</section>`;
-  }
+  if (done.length) html += `<section class="sec"><div class="sec-h"><h2>Completed · last 14 days</h2><button class="pill" data-act="show-done">${ui.showDone ? 'Hide' : 'Show ' + done.length}</button></div>${ui.showDone ? done.map(t => taskHTML(t)).join('') : ''}</section>`;
   return html + '</div>';
 }
-function repeatView() {
-  const list = tasks().filter(t => t.repeat).sort(byDue);
-  const groups = { daily: [], weekly: [], monthly: [], yearly: [] };
-  list.forEach(t => (groups[t.repeat.freq] || groups.monthly).push(t));
-  let html = `<div class="narrow"><div class="hdr"><div><div class="sub">Tasks that come back</div><h1>Repeating</h1></div></div>
-    <div class="card" style="padding:0 14px"><div class="inline-add">${I.plusS}<input id="rep-new" data-enter="rep" dir="auto" placeholder="New… e.g. دفع الإيجار كل شهر 1/12"></div></div>
-    <p class="mut" style="font-size:12px;margin:8px 2px 0">Monthly is the default. Write كل يوم / كل أسبوع / كل سنة to change it.</p>`;
-  [['daily', 'Daily'], ['weekly', 'Weekly'], ['monthly', 'Monthly'], ['yearly', 'Yearly']].forEach(([k, n]) => {
-    if (groups[k].length) html += sec(n, groups[k].map(t => taskHTML(t, { })).join(''));
-  });
-  if (!list.length) html += '<div class="empty" style="padding-top:20px">No repeating tasks yet.</div>';
+function areaView(a) {
+  const ps = areaProjects(a.id);
+  const all = tasks().filter(t => taskArea(t) === a.id);
+  const loose = all.filter(t => !t.projectId || !db.projects[t.projectId] || db.projects[t.projectId].deleted);
+  const open = loose.filter(t => !t.done).sort(byDue);
+  const done = loose.filter(t => t.done).sort((x, y) => ((x.doneAt || '') < (y.doneAt || '') ? 1 : -1));
+  const openAll = all.filter(t => !t.done);
+  const overdue = openAll.filter(isOverdue).length;
+  let html = `<div class="narrow">
+    <div class="hdr"><div><div class="sub">${openAll.length} open${overdue ? ` · <span class="or">${overdue} overdue</span>` : ''} · ${ps.length} ${ps.length === 1 ? 'project' : 'projects'}</div><h1 class="area-h">${adot(a)}${esc(a.name)}</h1></div></div>`;
+  html += sec('Projects', `<div class="plist">${ps.map(pcardHTML).join('')}</div>
+    <div class="card" style="padding:0 6px 0 14px;margin-top:${ps.length ? 10 : 0}px">${addForm('proj', 'New project in ' + a.name, { id: 'proj-new' })}</div>
+    ${ps.length ? '' : '<p class="mut" style="font-size:12px;margin:8px 2px 0">A project keeps one goal’s tasks together, split into stages if you like.</p>'}`);
+  html += sec('Tasks', `${open.map(t => taskHTML(t, { inArea: true })).join('') || '<div class="empty" style="padding:6px 0 4px">No loose tasks.</div>'}
+    ${addForm('area-task', 'Add a task to ' + a.name, { id: 'area-new' })}`, { right: `<span class="mut">${open.length}</span>` });
+  if (done.length) html += `<section class="sec"><div class="sec-h"><h2>Completed</h2><button class="pill" data-act="show-done">${ui.showDone ? 'Hide' : 'Show ' + done.length}</button></div>${ui.showDone ? done.slice(0, 40).map(t => taskHTML(t, { inArea: true })).join('') : ''}</section>`;
   return html + '</div>';
-}
-function projStats(p) {
-  const ts = tasks().filter(t => t.projectId === p.id);
-  const done = ts.filter(t => t.done).length;
-  return { total: ts.length, done, open: ts.length - done, pct: ts.length ? Math.round(done / ts.length * 100) : 0 };
-}
-function projectsView() {
-  const ps = projects();
-  let html = `<div class="narrow"><div class="hdr"><div><div class="sub">${ps.length} active</div><h1>Projects</h1></div></div>
-    <div class="card" style="padding:0 14px;margin-bottom:14px"><div class="inline-add">${I.plusS}<input id="proj-new" data-enter="proj" dir="auto" placeholder="New project name"></div></div><div class="plist">`;
-  ps.forEach(p => {
-    const s = projStats(p);
-    html += `<button class="card pcard" data-act="open-project" data-id="${esc(p.id)}">
-      <span style="display:flex;justify-content:space-between;gap:10px;align-items:baseline"><span class="nm" dir="auto">${esc(p.name)}</span><span class="mut" style="font-size:12px">${p.deadline ? 'Due ' + esc(shortDay(p.deadline)) : ''}</span></span>
-      <span class="prog"><i style="width:${s.pct}%"></i></span>
-      <span class="mut" style="font-size:12px">${s.done} of ${s.total} done${(p.stages || []).length ? ' · ' + p.stages.length + ' stages' : ''}</span></button>`;
-  });
-  if (!ps.length) html += '<div class="empty">No projects yet. A project groups tasks into stages, like Pre-production → Editing → Delivery.</div>';
-  return html + '</div></div>';
 }
 function projectView(p) {
   const s = projStats(p);
   const ts = tasks().filter(t => t.projectId === p.id);
-  const sortT = list => [...list.filter(t => !t.done).sort(byDue), ...list.filter(t => t.done)];
+  const a = areaOf(p.areaId);
   const name = p.name.toLowerCase();
   const linked = unionEvents().filter(e => e.title.toLowerCase().includes(name) && evDays(e).slice(-1)[0] >= today()).slice(0, 5);
   const stageBlock = (st) => {
-    const list = sortT(ts.filter(t => (st ? t.stageId === st.id : !t.stageId || !(p.stages || []).some(x => x.id === t.stageId))));
+    const list = sortOpen(ts.filter(t => (st ? t.stageId === st.id : !t.stageId || !(p.stages || []).some(x => x.id === t.stageId))));
     const doneN = list.filter(t => t.done).length;
     const head = st
       ? `<div class="stage-h"><input id="st-${esc(st.id)}" data-stage="${esc(st.id)}" dir="auto" value="${esc(st.name)}" aria-label="Stage name"><span class="mut num" style="font-size:12px;white-space:nowrap">${doneN}/${list.length}</span><input type="date" id="std-${esc(st.id)}" data-stage-due="${esc(st.id)}" value="${esc(st.due || '')}" aria-label="Stage due date" style="background:transparent;border:0;color:var(--mut);font-size:12px;color-scheme:dark;width:118px"><button class="ib" data-act="del-stage" data-sid="${esc(st.id)}" aria-label="Delete stage">${I.x}</button></div>`
       : `<div class="stage-h"><span style="font-size:15px;font-weight:600;padding:4px 0">${(p.stages || []).length ? 'Other' : 'Tasks'}</span><span class="mut num" style="font-size:12px">${doneN}/${list.length}</span></div>`;
     if (!st && !list.length && (p.stages || []).length) return '';
-    return `<div class="stage">${head}${list.map(t => taskHTML(t)).join('')}
-      <div class="inline-add">${I.plusS}<input id="add-${st ? esc(st.id) : 'none'}" data-enter="stage" data-sid="${st ? esc(st.id) : ''}" dir="auto" placeholder="Add task${st ? ' to ' + esc(st.name) : ''}…"></div></div>`;
+    return `<div class="stage">${head}${list.map(t => taskHTML(t, { inArea: true, inProject: true })).join('')}
+      ${addForm('stage', st ? 'Add task to ' + st.name : 'Add task', { id: 'add-' + (st ? st.id : 'none'), data: `data-sid="${st ? esc(st.id) : ''}"` })}</div>`;
   };
   return `<div class="narrow">
-    <div class="hdr" style="margin-bottom:8px"><button class="pill" data-act="nav" data-v="projects" style="display:inline-flex;align-items:center;gap:4px;padding-left:8px">${I.l} Projects</button><button class="ib" data-act="del-project" aria-label="Delete project">${I.trash}</button></div>
+    <div class="hdr" style="margin-bottom:8px"><button class="pill" data-act="nav" data-v="${a ? a.id : 'tasks'}" style="display:inline-flex;align-items:center;gap:6px;padding-left:8px">${I.l}${a ? adot(a) + esc(a.name) : 'Tasks'}</button><button class="ib" data-act="del-project" aria-label="Delete project">${I.trash}</button></div>
     <input id="proj-name" class="title-in" style="font-size:28px" dir="auto" value="${esc(p.name)}" aria-label="Project name">
     <div style="display:flex;align-items:center;gap:10px;margin:10px 0 12px;flex-wrap:wrap;font-size:13px" class="mut">
       <span>${s.done} of ${s.total} done</span><span>·</span>
       <label style="display:flex;align-items:center;gap:6px">Deadline <input type="date" id="proj-deadline" value="${esc(p.deadline || '')}" style="background:transparent;border:0;color:var(--tx);color-scheme:dark;font-size:13px"></label>
+      <span>·</span>
+      <label style="display:flex;align-items:center;gap:6px">Section <select id="proj-area" class="mini-sel"><option value="">None</option>${AREAS.map(x => `<option value="${x.id}" ${p.areaId === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
     </div>
     <div class="prog"><i style="width:${s.pct}%"></i></div>
     ${linked.length ? sec('Linked events', linked.map(evHTML).join('')) : ''}
@@ -837,51 +1041,95 @@ function ensureReviewEvents(from, to) {
   fetchEvents(from, to).then(ev => { if (ui.rKey === key) { ui.rEvents = ev; if (ui.view === 'review') renderMain(); } })
     .catch(() => { ui.rEvents = unionEvents().filter(e => evDays(e).some(d => d >= from && d <= to)); if (ui.view === 'review') renderMain(); });
 }
+function reviewScope() {
+  const fA = areaOf(ui.rArea) ? ui.rArea : '';
+  const p = ui.rProj && db.projects[ui.rProj] && !db.projects[ui.rProj].deleted ? db.projects[ui.rProj] : null;
+  const fP = p && (!fA || p.areaId === fA) ? p.id : '';
+  const tOk = t => !!t && (!fA || taskArea(t) === fA) && (!fP || t.projectId === fP);
+  const lOk = l => { const t = db.tasks[l.taskId]; if (t) return tOk(t); return (!fA || l.areaId === fA) && (!fP || l.projectId === fP); };
+  const label = fP ? db.projects[fP].name : fA ? areaOf(fA).name : 'All sections';
+  return { fA, fP, tOk, lOk, label };
+}
 function reviewData(from, to) {
+  const sc = reviewScope();
   const inR = iso => { const d = isoDay(iso); return d >= from && d <= to; };
-  const logs = Object.values(db.log).filter(l => inR(l.at)).sort((a, b) => (a.at < b.at ? -1 : 1));
+  const logs = Object.values(db.log).filter(l => inR(l.at) && sc.lOk(l)).sort((a, b) => (a.at < b.at ? -1 : 1));
   const undone = new Set(logs.filter(l => l.type === 'undone').map(l => l.taskId));
   const done = logs.filter(l => l.type === 'done' && (l.repeat || !undone.has(l.taskId) || (db.tasks[l.taskId] && db.tasks[l.taskId].done)));
   const created = logs.filter(l => l.type === 'created');
   const postponed = logs.filter(l => l.type === 'postponed');
   const late = done.filter(l => l.late > 0);
   const avgLate = late.length ? (late.reduce((a, l) => a + l.late, 0) / late.length) : 0;
-  const stillOpen = tasks().filter(t => !t.done && t.due && t.due >= from && t.due <= to);
+  const scoped = tasks().filter(sc.tOk);
+  const open = scoped.filter(t => !t.done).sort(byDue);
+  const stillOpen = open.filter(t => t.due && t.due >= from && t.due <= to);
+  const overdue = open.filter(isOverdue);
   const plannedDone = done.filter(l => l.due && l.due >= from && l.due <= to).length;
   const planned = plannedDone + stillOpen.length;
   const rep = done.filter(l => l.repeat);
-  const events = (ui.rEvents || []).filter(e => evDays(e).some(d => d >= from && d <= to));
+  /* events have no section: tie them to a project (or a section's projects) by name */
+  const scopeProjects = sc.fP ? [db.projects[sc.fP]] : sc.fA ? areaProjects(sc.fA) : projects();
+  const evMatch = e => { const tl = e.title.toLowerCase(); return scopeProjects.some(p => tl.includes(p.name.toLowerCase())) || (sc.fA && !sc.fP && tl.includes(areaOf(sc.fA).name.toLowerCase())); };
+  const events = (ui.rEvents || []).filter(e => evDays(e).some(d => d >= from && d <= to) && (!sc.fA && !sc.fP ? true : evMatch(e)));
   let mins = 0;
   events.forEach(e => { if (!e.allDay) mins += Math.max(0, (new Date(e.end) - new Date(e.start)) / 6e4); });
-  const byP = {};
-  const P = n => byP[n] || (byP[n] = { done: 0, open: 0, events: 0 });
-  done.forEach(l => P(l.project || 'No project').done++);
-  stillOpen.forEach(t => P(projName(t.projectId) || 'No project').open++);
-  events.forEach(e => { const p = projects().find(p => e.title.toLowerCase().includes(p.name.toLowerCase())); if (p) P(p.name).events++; });
-  return { from, to, logs, done, created, postponed, late, avgLate, stillOpen, planned, plannedDone, rep, events, hours: mins / 60, byP };
+  /* breakdown: by section → by project → by stage, one level below the current filter */
+  const by = {};
+  const B = n => by[n] || (by[n] = { done: 0, open: 0, overdue: 0 });
+  const keyOf = (t, l) => {
+    if (sc.fP) { const p = db.projects[sc.fP]; const sid = t ? t.stageId : null; return sid && stageName(p.id, sid) ? stageName(p.id, sid) : 'No stage'; }
+    if (sc.fA) return (t ? projName(t.projectId) : l && l.project) || 'No project';
+    const a = areaOf(t ? taskArea(t) : l && l.areaId); return a ? a.name : 'No section';
+  };
+  done.forEach(l => B(keyOf(db.tasks[l.taskId], l)).done++);
+  open.forEach(t => { const k = B(keyOf(t)); k.open++; if (isOverdue(t)) k.overdue++; });
+  return { from, to, sc, logs, done, created, postponed, late, avgLate, open, stillOpen, overdue, planned, plannedDone, rep, events, hours: mins / 60, by, scopeProjects };
 }
 function reviewView() {
   const [from, to] = reviewRange();
   ensureReviewEvents(from, to);
   const r = reviewData(from, to);
+  const sc = r.sc;
   const loading = ui.rEvents === null;
   const seg = (n, l) => `<button class="${ui.rDays === n ? 'on' : ''}" data-act="range" data-n="${n}" aria-pressed="${ui.rDays === n}">${l}</button>`;
   const stat = (k, v, s, cls = '') => `<div class="card stat"><span class="k">${k}</span><span class="v ${cls}">${v}</span><span class="s">${s}</span></div>`;
-  const pEntries = Object.entries(r.byP).sort((a, b) => (b[1].done + b[1].open) - (a[1].done + a[1].open));
-  const max = Math.max(1, ...pEntries.map(([, v]) => v.done + v.open));
+  const projOpts = (sc.fA ? areaProjects(sc.fA) : projects());
+  const entries = Object.entries(r.by).sort((a, b) => (b[1].done + b[1].open) - (a[1].done + a[1].open));
+  const max = Math.max(1, ...entries.map(([, v]) => v.done + v.open));
+  const byTitle = sc.fP ? 'By stage' : sc.fA ? 'By project' : 'By section';
+  const colorFor = n => { const a = AREAS.find(x => x.name === n); return a ? a.color : ''; };
+  let focus = '';
+  if (sc.fP) {
+    const p = db.projects[sc.fP]; const s = projStats(p);
+    focus = sec('Project', `<div class="card" style="padding:14px 16px">
+      <div style="display:flex;justify-content:space-between;gap:10px;font-size:14px"><span dir="auto">${esc(p.name)}</span><span class="mut">${s.pct}% · ${s.done}/${s.total}</span></div>
+      <div class="prog" style="margin:10px 0"><i style="width:${s.pct}%"></i></div>
+      <div class="mut" style="font-size:12px">${p.deadline ? `Deadline ${esc(shortDay(p.deadline))} · ${diffD(today(), p.deadline) >= 0 ? diffD(today(), p.deadline) + ' days left' : '<span class="or">passed</span>'}` : 'No deadline'}</div>
+      ${(p.stages || []).map(st => { const ts = tasks().filter(t => t.projectId === p.id && t.stageId === st.id); const d = ts.filter(t => t.done).length; const pc = ts.length ? Math.round(d / ts.length * 100) : 0; return `<div style="margin-top:12px"><div style="display:flex;justify-content:space-between;font-size:13px;gap:8px"><span dir="auto">${esc(st.name)}</span><span class="mut">${d}/${ts.length}${st.due ? ' · ' + esc(shortDay(st.due)) : ''}</span></div><div class="prog" style="margin-top:6px;height:4px"><i style="width:${pc}%"></i></div></div>`; }).join('')}
+      <button class="btn full" style="margin-top:14px" data-act="open-project" data-id="${esc(p.id)}">Open project</button></div>`);
+  } else if (sc.fA) {
+    const ps = areaProjects(sc.fA);
+    if (ps.length) focus = sec('Projects in ' + areaOf(sc.fA).name, `<div class="plist">${ps.map(pcardHTML).join('')}</div>`);
+  }
   return `<div class="narrow">
     <div class="hdr"><div><div class="sub">${esc(shortDay(from))} – ${esc(shortDay(to))} · ${diffD(from, to) + 1} days</div><h1>Review</h1></div></div>
+    <div class="rsel">
+      <label><span class="sr">Section</span><select id="r-area"><option value="">All sections</option>${AREAS.map(a => `<option value="${a.id}" ${sc.fA === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
+      <label><span class="sr">Project</span><select id="r-proj"><option value="">${sc.fA ? 'Whole section' : 'All projects'}</option>${projOpts.map(p => `<option value="${esc(p.id)}" ${sc.fP === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
+    </div>
     <div class="seg" role="group" aria-label="Range">${seg(7, '7 days')}${seg(14, '14 days')}${seg(30, '30 days')}${seg(0, 'Custom')}</div>
     ${ui.rDays === 0 ? `<div class="card" style="margin-top:10px"><div class="field"><label for="r-from">From</label><input type="date" id="r-from" value="${esc(from)}"></div><div class="field"><label for="r-to">To</label><input type="date" id="r-to" value="${esc(to)}"></div></div>` : ''}
     <div class="stats" style="margin-top:16px">
       ${stat('Tasks done', r.done.length, r.planned ? `${r.plannedDone} of ${r.planned} planned in range` : 'nothing planned in range')}
-      ${stat('Meetings & events', loading ? '…' : r.events.length, loading ? 'loading calendar' : `${r.hours.toFixed(1)} h in calendar`)}
+      ${stat('Open now', r.open.length, r.overdue.length ? `<span class="or">${r.overdue.length} overdue</span>` : 'none overdue')}
       ${stat('Done late', r.late.length, r.late.length ? `avg ${r.avgLate.toFixed(1)} days late` : 'none', r.late.length ? 'or' : '')}
-      ${stat('Repeating on time', `${r.rep.filter(l => !l.late).length}/${r.rep.length}`, 'repeat completions')}
+      ${stat(sc.fA || sc.fP ? 'Related events' : 'Meetings & events', loading ? '…' : r.events.length, loading ? 'loading calendar' : `${r.hours.toFixed(1)} h in calendar`)}
     </div>
-    <p class="mut" style="font-size:13px;margin:12px 2px 0">${r.created.length} created · ${r.postponed.length} postponements · ${r.stillOpen.length} still open from this period</p>
-    ${pEntries.length ? sec('By project', `<div class="bars">${pEntries.map(([n, v]) => `<div><div class="l"><span dir="auto">${esc(n)}</span><span class="mut">${v.done} done · ${v.open} open${v.events ? ' · ' + v.events + ' events' : ''}</span></div><div class="t"><i style="width:${Math.round((v.done + v.open) / max * 100)}%"></i></div></div>`).join('')}</div>`) : ''}
-    ${sec('Export full summary', `<p class="mut" style="margin:0 0 12px;font-size:13px;line-height:1.55">Every task and event in the range: created, due and done times, project, priority, notes, subtasks, repeats and postponements.</p>
+    <p class="mut" style="font-size:13px;margin:12px 2px 0">${r.created.length} created · ${r.postponed.length} postponements · ${r.rep.filter(l => !l.late).length}/${r.rep.length} repeats on time</p>
+    ${focus}
+    ${entries.length ? sec(byTitle, `<div class="bars">${entries.map(([n, v]) => `<div><div class="l"><span dir="auto" style="display:flex;align-items:center;gap:7px">${colorFor(n) ? `<i class="adot" style="background:${colorFor(n)}"></i>` : ''}${esc(n)}</span><span class="mut">${v.done} done · ${v.open} open${v.overdue ? ` · <span class="or">${v.overdue} late</span>` : ''}</span></div><div class="t"><i style="width:${Math.round((v.done + v.open) / max * 100)}%;${colorFor(n) ? 'background:' + colorFor(n) : ''}"></i></div></div>`).join('')}</div>`) : ''}
+    ${r.overdue.length ? sec('Overdue', r.overdue.slice(0, 12).map(t => taskHTML(t, { inArea: !!sc.fA })).join(''), { cls: 'or' }) : ''}
+    ${sec('Export full summary', `<p class="mut" style="margin:0 0 12px;font-size:13px;line-height:1.55">${esc(sc.label)}: every task and event in the range — created, due and done times, section, project, notes, subtasks, repeats and postponements.</p>
       <button class="btn pri full" data-act="copy-md" ${loading ? 'disabled' : ''}>Copy for Claude (Markdown)</button>
       <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:8px">
         <button class="btn" data-act="save-md" ${loading ? 'disabled' : ''} style="font-size:14px;padding:0 8px">Save to Drive</button>
@@ -892,25 +1140,28 @@ function reviewView() {
 }
 function taskLine(t) {
   const bits = [];
+  const a = areaOf(taskArea(t)); if (a) bits.push(a.name);
   const pn = projName(t.projectId); if (pn) bits.push(pn + (t.stageId && stageName(t.projectId, t.stageId) ? ' › ' + stageName(t.projectId, t.stageId) : ''));
   if (t.due) bits.push('due ' + t.due + (t.time ? ' ' + t.time : ''));
   if (t.urgent) bits.push('urgent');
   if (t.repeat) bits.push('repeats ' + t.repeat.freq);
   if (t.postponed) bits.push('postponed ' + t.postponed + 'x');
   const st = t.subtasks || []; if (st.length) bits.push(`subtasks ${st.filter(s => s.done).length}/${st.length}`);
+  if ((t.images || []).length) bits.push(t.images.length + ' image(s)');
   return `- ${t.title}${bits.length ? ' — ' + bits.join(', ') : ''}`;
 }
 function buildMarkdown(r) {
   const L = [];
-  L.push(`# Zerodocs control review: ${r.from} → ${r.to}`, '', `Generated ${new Date().toLocaleString('en-GB')} (${TZ}).`, '');
+  L.push(`# Zerodocs control review: ${r.sc.label}, ${r.from} → ${r.to}`, '', `Generated ${new Date().toLocaleString('en-GB')} (${TZ}).`, '');
   L.push('## Summary');
   L.push(`- Tasks completed: ${r.done.length} (${r.plannedDone} of ${r.planned} tasks that were due in this period)`);
   L.push(`- Completed late: ${r.late.length}${r.late.length ? ` (average ${r.avgLate.toFixed(1)} days late)` : ''}`);
+  L.push(`- Open now: ${r.open.length} (${r.overdue.length} overdue)`);
   L.push(`- Tasks created: ${r.created.length} · Postponements: ${r.postponed.length} · Still open from this period: ${r.stillOpen.length}`);
   L.push(`- Calendar: ${r.events.length} events, ${r.hours.toFixed(1)} hours of timed events`);
   L.push(`- Repeating tasks: ${r.rep.filter(l => !l.late).length}/${r.rep.length} completions on time`, '');
-  const pE = Object.entries(r.byP);
-  if (pE.length) { L.push('## By project'); pE.forEach(([n, v]) => L.push(`- ${n}: ${v.done} done, ${v.open} open, ${v.events} related events`)); L.push(''); }
+  const bE = Object.entries(r.by);
+  if (bE.length) { L.push('## ' + (r.sc.fP ? 'By stage' : r.sc.fA ? 'By project' : 'By section')); bE.forEach(([n, v]) => L.push(`- ${n}: ${v.done} done, ${v.open} open, ${v.overdue} overdue`)); L.push(''); }
   L.push('## Day by day');
   for (let d = r.from; d <= r.to; d = addD(d, 1)) {
     const ev = r.events.filter(e => evDays(e).includes(d));
@@ -924,6 +1175,7 @@ function buildMarkdown(r) {
       dn.forEach(l => {
         const t = db.tasks[l.taskId];
         const bits = [];
+        const a = areaOf(t ? taskArea(t) : l.areaId); if (a) bits.push(a.name);
         if (l.project) bits.push(l.project + (l.stage ? ' › ' + l.stage : ''));
         bits.push('at ' + hm(l.at));
         if (l.due) bits.push('due ' + l.due);
@@ -938,34 +1190,35 @@ function buildMarkdown(r) {
     if (cr.length) { L.push('Created:'); cr.forEach(l => L.push(`- ${l.title}${l.project ? ' (' + l.project + ')' : ''}${l.due ? ' — due ' + l.due : ''}`)); }
     if (po.length) { L.push('Postponed:'); po.forEach(l => L.push(`- ${l.title}: ${l.from} → ${l.to}`)); }
   }
-  const open = tasks().filter(t => !t.done).sort(byDue);
+  const open = r.open;
   L.push('', `## Open tasks today (${open.length})`);
   open.forEach(t => {
     L.push(taskLine(t));
     if (t.notes && t.notes.trim()) L.push(`  Notes: ${t.notes.trim().replace(/\n+/g, ' / ')}`);
     (t.subtasks || []).forEach(s => L.push(`  - [${s.done ? 'x' : ' '}] ${s.title}`));
   });
-  const ps = projects();
+  const ps = r.scopeProjects;
   if (ps.length) {
     L.push('', '## Projects');
-    ps.forEach(p => { const s = projStats(p); L.push(`- ${p.name}: ${s.done}/${s.total} done${p.deadline ? ', deadline ' + p.deadline : ''}${(p.stages || []).length ? ', stages: ' + p.stages.map(x => x.name + (x.due ? ' (' + x.due + ')' : '')).join(' → ') : ''}`); });
+    ps.forEach(p => { const s = projStats(p); L.push(`- ${p.name}${areaOf(p.areaId) ? ' [' + areaOf(p.areaId).name + ']' : ''}: ${s.done}/${s.total} done${p.deadline ? ', deadline ' + p.deadline : ''}${(p.stages || []).length ? ', stages: ' + p.stages.map(x => x.name + (x.due ? ' (' + x.due + ')' : '')).join(' → ') : ''}`); });
   }
   return L.join('\n');
 }
 function csvCell(v) { const s = String(v ?? ''); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
 function buildCSV(r) {
-  const rows = [['kind', 'date', 'time', 'title', 'project', 'stage', 'due', 'done_at', 'late_days', 'urgent', 'repeat', 'postponed', 'from', 'to', 'location', 'calendar', 'notes']];
-  r.events.forEach(e => rows.push(['event', e.allDay ? e.start : isoDay(e.start), e.allDay ? 'all day' : hm(e.start) + '-' + hm(e.end), e.title, '', '', '', '', '', '', e.recurring ? 'yes' : '', '', '', '', e.location, e.calName, e.desc.replace(/\s+/g, ' ').slice(0, 500)]));
+  const rows = [['kind', 'date', 'time', 'title', 'section', 'project', 'stage', 'due', 'done_at', 'late_days', 'urgent', 'repeat', 'postponed', 'from', 'to', 'location', 'calendar', 'notes']];
+  r.events.forEach(e => rows.push(['event', e.allDay ? e.start : isoDay(e.start), e.allDay ? 'all day' : hm(e.start) + '-' + hm(e.end), e.title, '', '', '', '', '', '', '', e.recurring ? 'yes' : '', '', '', '', e.location, e.calName, e.desc.replace(/\s+/g, ' ').slice(0, 500)]));
   r.logs.filter(l => ['done', 'created', 'postponed'].includes(l.type)).forEach(l => {
     if (l.type === 'done' && !r.done.includes(l)) return;
     const t = db.tasks[l.taskId];
-    rows.push([l.type, isoDay(l.at), hm(l.at), l.title, l.project, l.stage, l.due, l.type === 'done' ? l.at : '', l.late || '', l.urgent ? 'yes' : '', l.repeat || '', t ? t.postponed || 0 : '', l.from || '', l.to || '', '', '', t ? (t.notes || '').replace(/\s+/g, ' ') : '']);
+    const la = areaOf(t ? taskArea(t) : l.areaId);
+    rows.push([l.type, isoDay(l.at), hm(l.at), l.title, la ? la.name : '', l.project, l.stage, l.due, l.type === 'done' ? l.at : '', l.late || '', l.urgent ? 'yes' : '', l.repeat || '', t ? t.postponed || 0 : '', l.from || '', l.to || '', '', '', t ? (t.notes || '').replace(/\s+/g, ' ') : '']);
   });
-  tasks().filter(t => !t.done).forEach(t => rows.push(['open', today(), t.time || '', t.title, projName(t.projectId), stageName(t.projectId, t.stageId), t.due || '', '', t.due && t.due < today() ? diffD(t.due, today()) : '', t.urgent ? 'yes' : '', t.repeat ? t.repeat.freq : '', t.postponed || 0, '', '', '', '', (t.notes || '').replace(/\s+/g, ' ')]));
+  r.open.forEach(t => rows.push(['open', today(), t.time || '', t.title, (areaOf(taskArea(t)) || { name: '' }).name, projName(t.projectId), stageName(t.projectId, t.stageId), t.due || '', '', t.due && t.due < today() ? diffD(t.due, today()) : '', t.urgent ? 'yes' : '', t.repeat ? t.repeat.freq : '', t.postponed || 0, '', '', '', '', (t.notes || '').replace(/\s+/g, ' ')]));
   return '﻿' + rows.map(r => r.map(csvCell).join(',')).join('\r\n');
 }
 function buildJSON(r) {
-  return JSON.stringify({ range: { from: r.from, to: r.to, timezone: TZ }, generated: new Date().toISOString(), events: r.events, log: r.logs, tasks: tasks(), projects: projects() }, null, 2);
+  return JSON.stringify({ range: { from: r.from, to: r.to, timezone: TZ }, generated: new Date().toISOString(), scope: r.sc.label, events: r.events, log: r.logs, tasks: tasks().filter(r.sc.tOk), projects: r.scopeProjects }, null, 2);
 }
 function download(name, text, mime) {
   if (NATIVE) { ZeroNative.save(name, mime, text); return; }
@@ -984,10 +1237,20 @@ async function copyText(text) {
 function openSheet(s) { const had = !!ui.sheet; ui.sheet = s; if (!had) history.pushState({ zsheet: 1 }, ''); renderSheet(); }
 function closeSheet() {
   if (!ui.sheet) return;
+  if (ui.sheet.type === 'image' && ui.sheet.prev) { ui.sheet = ui.sheet.prev; renderSheet(); return; }
+  cleanupNote();
   if (history.state && history.state.zsheet) history.back();
   else { ui.sheet = null; renderSheet(); renderMain(); }
 }
-window.addEventListener('popstate', () => { if (ui.sheet) { ui.sheet = null; renderSheet(); renderMain(); } });
+window.addEventListener('popstate', () => { if (ui.sheet) { cleanupNote(); ui.sheet = null; renderSheet(); renderMain(); } });
+/* a note left empty disappears when you close it */
+function cleanupNote() {
+  const s = ui.sheet; if (!s || s.type !== 'note') return;
+  const n = db.notes[s.id]; if (!n) return;
+  clearTimeout(typeT);
+  if (!(n.text || '').trim()) { n.deleted = true; n.updatedAt = now(); }
+  save();
+}
 function openEventSheet(ev, pre = {}) {
   const writable = visibleCals().filter(c => c.writable);
   const draft = ev ? {
@@ -1011,16 +1274,19 @@ function renderSheet() {
   if (s.type === 'task') { const t = db.tasks[s.id]; if (!t || t.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = taskSheet(t); }
   else if (s.type === 'event') inner = eventSheet(s);
   else if (s.type === 'settings') inner = settingsSheet();
+  else if (s.type === 'note') { const n = db.notes[s.id]; if (!n || n.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = noteSheet(n); }
+  else if (s.type === 'image') inner = imageSheet(s);
   const sc = $('.sheet', root); const top = sc ? sc.scrollTop : 0;
-  root.innerHTML = `<div class="sheet-bg" data-act="close-sheet"></div><div class="sheet" role="dialog" aria-modal="true" aria-label="${s.type}">${inner}</div>`;
+  root.innerHTML = `<div class="sheet-bg" data-act="close-sheet"></div><div class="sheet ${s.type === 'note' ? 'note-sheet' : ''}" role="dialog" aria-modal="true" aria-label="${s.type}">${inner}</div>`;
   const nsc = $('.sheet', root); if (nsc) nsc.scrollTop = top;
-  autoGrow();
+  autoGrow(); hydrateImgs(root);
 }
 function autoGrow() { document.querySelectorAll('textarea.title-in').forEach(el => { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }); }
 function taskSheet(t) {
-  const ps = projects(); const p = t.projectId && db.projects[t.projectId];
+  const ta = taskArea(t);
+  const ps = ta ? areaProjects(ta) : projects(); const p = t.projectId && db.projects[t.projectId];
   const stages = p ? p.stages || [] : [];
-  const crumb = projName(t.projectId) ? projName(t.projectId) + (t.stageId && stageName(t.projectId, t.stageId) ? ' › ' + stageName(t.projectId, t.stageId) : '') : (t.repeat ? 'Repeating' : 'Task');
+  const crumb = [areaOf(ta) ? areaOf(ta).name : '', projName(t.projectId), t.stageId ? stageName(t.projectId, t.stageId) : ''].filter(Boolean).join(' › ') || (t.repeat ? 'Repeating' : 'Task');
   const opt = (v, l, cur) => `<option value="${esc(v)}" ${String(cur ?? '') === String(v) ? 'selected' : ''}>${esc(l)}</option>`;
   const urg = isUrgent(t);
   return `
@@ -1034,16 +1300,30 @@ function taskSheet(t) {
     <div class="field"><label for="t-time">Time</label><input type="time" id="t-time" value="${esc(t.time || '')}"></div>
     <div class="field"><span class="lb">Urgent</span><button class="sw ${t.urgent ? 'on' : ''}" data-act="sw-urgent" role="switch" aria-checked="${!!t.urgent}" aria-label="Urgent"></button></div>
     <div class="field"><label for="t-repeat">Repeat</label><select id="t-repeat">${opt('', 'Never', t.repeat ? t.repeat.freq : '')}${opt('daily', 'Every day', t.repeat && t.repeat.freq)}${opt('weekly', 'Every week', t.repeat && t.repeat.freq)}${opt('monthly', 'Every month', t.repeat && t.repeat.freq)}${opt('yearly', 'Every year', t.repeat && t.repeat.freq)}</select></div>
+    <div class="field"><label for="t-area">Section</label><select id="t-area">${opt('', 'None', ta || '')}${AREAS.map(a => opt(a.id, a.name, ta)).join('')}</select></div>
     <div class="field"><label for="t-project">Project</label><select id="t-project">${opt('', 'None', t.projectId || '')}${ps.map(x => opt(x.id, x.name, t.projectId)).join('')}</select></div>
     ${stages.length ? `<div class="field"><label for="t-stage">Stage</label><select id="t-stage">${opt('', '—', t.stageId || '')}${stages.map(x => opt(x.id, x.name, t.stageId)).join('')}</select></div>` : ''}
   </div>
   <div class="quick">${[['Today', today()], ['Tomorrow', addD(today(), 1)], ['Next week', addD(today(), 7)]].map(([l, v]) => `<button class="chip" data-act="due-quick" data-v="${v}">${l}</button>`).join('')}${t.due ? '<button class="chip" data-act="due-quick" data-v="">No date</button>' : ''}</div>
   ${sec('Subtasks', `${(t.subtasks || []).map(s => `<div class="sub ${s.done ? 'on' : ''}"><button class="box ${s.done ? 'on' : ''}" data-act="sub-toggle" data-sid="${esc(s.id)}" aria-label="Toggle subtask">${s.done ? I.check : ''}</button><input id="s-${esc(s.id)}" data-sub="${esc(s.id)}" dir="auto" value="${esc(s.title)}" aria-label="Subtask"><button class="ib x" data-act="sub-del" data-sid="${esc(s.id)}" aria-label="Delete subtask">${I.x}</button></div>`).join('')}
-    <div class="inline-add">${I.plusS}<input id="s-new" data-enter="sub" dir="auto" placeholder="Add subtask"></div>`, { right: (t.subtasks || []).length ? `<span class="mut">${(t.subtasks || []).filter(s => s.done).length} of ${(t.subtasks || []).length}</span>` : '' })}
-  ${sec('Notes', `<textarea id="t-notes" class="ta" dir="auto" placeholder="Details, ideas, anything…">${esc(t.notes || '')}</textarea>`)}
+    ${addForm('sub', 'Add subtask', { id: 's-new' })}`, { right: (t.subtasks || []).length ? `<span class="mut">${(t.subtasks || []).filter(s => s.done).length} of ${(t.subtasks || []).length}</span>` : '' })}
+  ${sec('Notes', `<textarea id="t-notes" class="ta" dir="auto" placeholder="Details, ideas, anything…">${esc(t.notes || '')}</textarea>
+    ${(t.images || []).length ? `<div class="imgs">${t.images.map(im => `<button class="ph" data-act="img-open" data-img="${esc(im.id)}" aria-label="Open image"><img data-img="${esc(im.id)}" alt="">${im.local ? '<span class="pend">Uploading</span>' : ''}</button>`).join('')}</div>` : ''}
+    <label class="img-add">${I.img}<span>Add image</span><input type="file" id="t-img" accept="image/*" multiple></label>`)}
   ${sec('Links', `${(t.links || []).map((l, i) => `<div style="display:flex;align-items:center;gap:8px;min-height:40px"><a href="${esc(l)}" target="_blank" rel="noopener" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;text-decoration:none;display:flex;align-items:center;gap:8px">${I.link}${esc(l.replace(/^https?:\/\//, ''))}</a><button class="ib" data-act="link-del" data-i="${i}" aria-label="Remove link">${I.x}</button></div>`).join('')}
-    <div class="inline-add">${I.plusS}<input id="l-new" data-enter="link" type="url" inputmode="url" placeholder="Paste a link"></div>`)}
+    ${addForm('link', 'Paste a link', { id: 'l-new', type: 'url' })}`)}
   <p class="mut" style="font-size:12px;margin-top:26px">Created ${esc(new Date(t.createdAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}${t.postponed ? ` · postponed ${t.postponed}×` : ''}${t.doneAt ? ` · done ${esc(new Date(t.doneAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}` : ''}</p>`;
+}
+function noteSheet(n) {
+  return `
+  <div class="sheet-top"><button class="ib" data-act="close-sheet" aria-label="Close">${I.l}</button><span class="crumb">${esc(new Date(n.updatedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</span><button class="ib" data-act="del-note" aria-label="Delete note">${I.trash}</button></div>
+  <textarea id="n-text" class="note-ta" dir="auto" placeholder="Write…" aria-label="Note">${esc(n.text || '')}</textarea>`;
+}
+function imageSheet(s) {
+  return `
+  <div class="sheet-top"><button class="ib" data-act="close-sheet" aria-label="Back">${I.l}</button><span class="crumb">Image</span><button class="ib" data-act="img-del" aria-label="Delete image">${I.trash}</button></div>
+  <div class="viewer ph"><img data-img="${esc(s.img)}" alt=""></div>
+  ${s.img.startsWith('l_') ? '<p class="mut" style="font-size:12px;margin-top:10px">Saved on this device. It will upload to Drive › Zero › images when you are online.</p>' : ''}`;
 }
 function eventSheet(s) {
   const f = s.draft; const ev = s.ev;
@@ -1082,7 +1362,7 @@ function settingsSheet() {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px"><button class="btn" data-act="sync-now">${I.sync} Sync now</button>${folderId ? `<a class="btn" style="text-decoration:none" target="_blank" rel="noopener" href="https://drive.google.com/drive/folders/${esc(folderId)}">Open in Drive</a>` : '<span></span>'}</div>`)}
   ${cals.length ? sec('Calendars shown', `<div class="card">${cals.filter(c => c.selected).map(c => `<div class="field"><span class="lb" style="display:flex;align-items:center;gap:8px;color:var(--tx);min-width:0"><i style="width:8px;height:8px;border-radius:4px;background:${esc(c.color || '#7AA2FF')};flex-shrink:0"></i><span dir="auto" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.name)}</span></span><button class="sw blue ${hidden.includes(c.id) ? '' : 'on'}" data-act="cal-toggle" data-id="${esc(c.id)}" role="switch" aria-checked="${!hidden.includes(c.id)}" aria-label="Show ${esc(c.name)}"></button></div>`).join('')}</div>`) : ''}
   ${NATIVE ? sec('Home screen', `<button class="btn full" data-act="pin-widget">Add the widget to your home screen</button><p class="mut" style="margin:10px 0 0;font-size:13px;line-height:1.6">Shows today's events and urgent tasks. Long-press the app icon for quick actions.</p>`) : sec('Install', `${/Android/i.test(navigator.userAgent) ? `<a class="btn full" style="text-decoration:none;margin-bottom:10px" href="${APK_URL}">Download the Android app (with widget)</a>` : ''}` + (deferredPrompt ? '<button class="btn full" data-act="install">Install Zerodocs control on this device</button>' : '<p class="mut" style="margin:0;font-size:13px;line-height:1.6">Chrome on Android: menu ⋮ › Add to Home screen / Install app. Chrome on Mac: the install icon in the address bar, or menu › Cast, save and share › Install page as app.</p>'))}
-  ${sec('Quick add tips', `<p class="mut" style="margin:0;font-size:13px;line-height:1.8" dir="auto">غداً · بعد غد · الخميس · 15/11 · بعد 3 أيام · ٤م · 16:30 · عاجل أو ! · #مشروع · كل شهر / كل أسبوع / كل يوم<br>Start with @ (or اجتماع + time) to create a Google Calendar event.<br>Press N on a keyboard to jump to quick add.</p>`)}
+  ${sec('Quick add tips', `<p class="mut" style="margin:0;font-size:13px;line-height:1.8" dir="auto">غداً · بعد غد · الخميس · 15/11 · بعد 3 أيام · ٤م · 16:30 · عاجل أو ! · #مشروع · كل شهر / كل أسبوع / كل يوم<br>Sections: #housing #zerodocs #dorba #outsource #personal (or #سكن #دربة #شخصي). Inside a section tab, new tasks go to that section automatically.<br>Start with @ (or اجتماع + time) to create a Google Calendar event.<br>Press N on a keyboard to jump to quick add.</p>`)}
   <button class="btn danger full" style="margin-top:26px" data-act="signout">Sign out on this device</button>`;
 }
 
@@ -1090,7 +1370,10 @@ function settingsSheet() {
 let deferredPrompt = null;
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferredPrompt = e; });
 
-function go(view) { ui.view = view; LS.set('view', view); if (view !== 'projects') ui.projectId = null; renderMain(); window.scrollTo(0, 0); }
+function go(view) { ui.view = view; LS.set('view', view); if (view !== 'project') { ui.projectId = null; } LS.set('projectId', ui.projectId); ui.showDone = false; renderMain(); window.scrollTo(0, 0); }
+function closeSheetQuiet() { if (ui.sheet) { if (history.state && history.state.zsheet) history.back(); ui.sheet = null; renderSheet(); } }
+function openProject(id) { if (!db.projects[id]) return; ui.projectId = id; ui.view = 'project'; LS.set('view', 'project'); LS.set('projectId', id); renderMain(); window.scrollTo(0, 0); }
+function openNote(id) { openSheet({ type: 'note', id }); setTimeout(() => { const i = $('#n-text'); if (i) { i.focus(); if (!i.value) return; i.setSelectionRange(i.value.length, i.value.length); } }, 60); }
 function setMonth(m) { ui.month = m; renderMain(); refreshMonth(m); }
 function monthAdd(m, n) { const d = pd(m + '-01'); d.setMonth(d.getMonth() + n); return ymd(d).slice(0, 7); }
 function curTask() { return ui.sheet && ui.sheet.type === 'task' ? db.tasks[ui.sheet.id] : null; }
@@ -1101,7 +1384,13 @@ document.addEventListener('click', e => {
   switch (a) {
     case 'connect-first': connect(true); break;
     case 'connect': connect(false); break;
-    case 'nav': if (a === 'nav' && el.dataset.v === 'projects') ui.projectId = null; go(el.dataset.v); break;
+    case 'nav': go(el.dataset.v); break;
+    case 'tfilter': ui.tFilter = el.dataset.v; renderMain(); break;
+    case 'new-note': { const n = newNote(''); openNote(n.id); break; }
+    case 'open-note': if (db.notes[el.dataset.id]) openNote(el.dataset.id); break;
+    case 'del-note': { const s = ui.sheet; const n = s && db.notes[s.id]; if (n && (!(n.text || '').trim() || confirm('Delete this note?'))) { n.deleted = true; n.text = n.text || ''; n.updatedAt = now(); save(); closeSheet(); toast('Note deleted'); } break; }
+    case 'img-open': if (t) { ui.sheet = { type: 'image', img: el.dataset.img, taskId: t.id, prev: ui.sheet }; renderSheet(); } break;
+    case 'img-del': { const s = ui.sheet; const x = s && db.tasks[s.taskId]; if (x && confirm('Remove this image?')) { removeImage(x, s.img); ui.sheet = s.prev; renderSheet(); renderMain(); } break; }
     case 'pick': ui.sel = el.dataset.d; if (ui.sel.slice(0, 7) !== ui.month) setMonth(ui.sel.slice(0, 7)); else renderMain(); break;
     case 'prev': setMonth(monthAdd(ui.month, -1)); break;
     case 'next': setMonth(monthAdd(ui.month, 1)); break;
@@ -1110,7 +1399,7 @@ document.addEventListener('click', e => {
     case 'open-task': if (db.tasks[el.dataset.id] && !db.tasks[el.dataset.id].deleted) openSheet({ type: 'task', id: el.dataset.id }); break;
     case 'open-ev': { const ev = findEv(el.dataset.k); if (ev) openEventSheet(ev); break; }
     case 'new-event': openEventSheet(null, { date: el.dataset.d }); break;
-    case 'new-task': { const x = newTask({ due: el.dataset.d || null }); openSheet({ type: 'task', id: x.id, fresh: true }); setTimeout(() => { const i = $('#t-title'); if (i) i.focus(); }, 60); break; }
+    case 'new-task': { const c = qaCtx(); const x = newTask({ due: el.dataset.d || null, areaId: c.areaId || null, projectId: c.projectId || null }); openSheet({ type: 'task', id: x.id, fresh: true }); setTimeout(() => { const i = $('#t-title'); if (i) i.focus(); }, 60); break; }
     case 'close-sheet': closeSheet(); break;
     case 'settings': openSheet({ type: 'settings' }); break;
     case 'del-task': if (t && confirm('Delete this task?')) { addLog('deleted', t); upd(t, { deleted: true }); closeSheet(); toast('Task deleted'); } break;
@@ -1122,10 +1411,10 @@ document.addEventListener('click', e => {
     case 'ev-allday': if (ui.sheet) { ui.sheet.draft.allDay = !ui.sheet.draft.allDay; renderSheet(); } break;
     case 'ev-save': saveEvent(); break;
     case 'ev-del': deleteEvent(); break;
-    case 'open-project': ui.projectId = el.dataset.id; ui.view = 'projects'; LS.set('view', 'projects'); renderMain(); window.scrollTo(0, 0); break;
+    case 'open-project': closeSheetQuiet(); openProject(el.dataset.id); break;
     case 'add-stage': { const p = db.projects[ui.projectId]; if (p) { const st = { id: uid(), name: 'New stage', due: null }; upd(p, { stages: [...(p.stages || []), st] }); renderMain(); setTimeout(() => { const i = document.getElementById('st-' + st.id); if (i) { i.focus(); i.select(); } }, 30); } break; }
     case 'del-stage': { const p = db.projects[ui.projectId]; if (p && confirm('Delete this stage? Its tasks stay in the project.')) { tasks().filter(x => x.stageId === el.dataset.sid).forEach(x => upd(x, { stageId: null })); upd(p, { stages: p.stages.filter(s => s.id !== el.dataset.sid) }); renderMain(); } break; }
-    case 'del-project': { const p = db.projects[ui.projectId]; if (p && confirm(`Delete project “${p.name}”? Its tasks are kept without a project.`)) { tasks().filter(x => x.projectId === p.id).forEach(x => upd(x, { projectId: null, stageId: null })); upd(p, { deleted: true }); ui.projectId = null; renderMain(); } break; }
+    case 'del-project': { const p = db.projects[ui.projectId]; if (p && confirm(`Delete project “${p.name}”? Its tasks are kept without a project.`)) { tasks().filter(x => x.projectId === p.id).forEach(x => upd(x, { projectId: null, stageId: null, areaId: x.areaId || p.areaId || null })); upd(p, { deleted: true }); go(p.areaId || 'tasks'); } break; }
     case 'range': ui.rDays = +el.dataset.n; if (ui.rDays === 0 && !ui.rFrom) { const [f, to] = [addD(today(), -13), today()]; ui.rFrom = f; ui.rTo = to; } renderMain(); break;
     case 'copy-md': { const [f, to] = reviewRange(); copyText(buildMarkdown(reviewData(f, to))).then(ok => toast(ok ? 'Copied — paste it in a chat with Claude' : 'Copy failed')); break; }
     case 'save-md': saveReviewToDrive(); break;
@@ -1153,7 +1442,8 @@ async function saveReviewToDrive() {
 function submitQA(input) {
   const v = input.value;
   if (!v.trim()) return;
-  if (quickAdd(v)) { ui.qa = ''; input.value = ''; document.querySelectorAll('.qa input').forEach(x => { x.value = ''; }); document.querySelectorAll('.qa-prev').forEach(x => { x.innerHTML = ''; }); renderMain(); }
+  if (ui.view === 'notes') { newNote(v.trim()); ui.qa = ''; input.value = ''; renderMain(); toast('Note saved'); return; }
+  if (quickAdd(v, qaCtx())) { ui.qa = ''; input.value = ''; document.querySelectorAll('.qa input').forEach(x => { x.value = ''; }); document.querySelectorAll('.qa-prev').forEach(x => { x.innerHTML = ''; }); renderMain(); }
 }
 document.addEventListener('keydown', e => {
   const el = e.target;
@@ -1162,28 +1452,40 @@ document.addEventListener('keydown', e => {
     const i = window.innerWidth >= 900 ? $('#qa-d') : $('#qa-m'); if (i) { e.preventDefault(); i.focus(); } return;
   }
   if (e.key !== 'Enter' || e.isComposing) return;
+  if (el.form) return; /* forms submit themselves (works with Arabic keyboards too) */
   const k = el.dataset && el.dataset.enter;
   if (el.id === 't-title' || el.id === 'ev-title') { e.preventDefault(); el.blur(); return; }
   if (!k) return;
   e.preventDefault();
   const v = el.value.trim(); const t = curTask();
   if (k === 'qa') submitQA(el);
-  else if (k === 'sub' && t && v) { upd(t, { subtasks: [...(t.subtasks || []), { id: uid(), title: v, done: false }] }); renderSheet(); renderMain(); setTimeout(() => { const i = $('#s-new'); if (i) i.focus(); }, 20); }
-  else if (k === 'link' && t && v) { const url = /^https?:\/\//i.test(v) ? v : 'https://' + v; upd(t, { links: [...(t.links || []), url] }); renderSheet(); }
-  else if (k === 'stage' && v) { quickAdd(v, { projectId: ui.projectId, stageId: el.dataset.sid || null }); renderMain(); setTimeout(() => { const i = document.getElementById(el.id); if (i) i.focus(); }, 20); }
-  else if (k === 'proj' && v) { const p = newProject(v); ui.projectId = p.id; renderMain(); }
-  else if (k === 'rep' && v) { quickAdd(v, { repeat: { freq: 'monthly', interval: 1 } }); renderMain(); setTimeout(() => { const i = $('#rep-new'); if (i) i.focus(); }, 20); }
+});
+/* every add-row is a <form>: Enter or the Add button both land here */
+document.addEventListener('submit', e => {
+  const f = e.target.closest('form[data-form]'); if (!f) return;
+  e.preventDefault();
+  const input = f.querySelector('input'); const v = (input.value || '').trim(); const kind = f.dataset.form; const t = curTask();
+  const refocus = id => setTimeout(() => { const i = document.getElementById(id); if (i) i.focus(); }, 20);
+  if (kind === 'qa') { submitQA(input); return; }
+  if (!v) { input.focus(); return; }
+  if (kind === 'sub' && t) { upd(t, { subtasks: [...(t.subtasks || []), { id: uid(), title: v, done: false }] }); renderSheet(); renderMain(); refocus('s-new'); }
+  else if (kind === 'link' && t) { const url = /^https?:\/\//i.test(v) ? v : 'https://' + v; upd(t, { links: [...(t.links || []), url] }); renderSheet(); }
+  else if (kind === 'stage') { quickAdd(v, { projectId: ui.projectId, areaId: (db.projects[ui.projectId] || {}).areaId || null, stageId: f.dataset.sid || null }); renderMain(); refocus(input.id); }
+  else if (kind === 'proj') { const aid = areaOf(ui.view) ? ui.view : null; const p = newProject(v, aid); toast('Project created'); openProject(p.id); }
+  else if (kind === 'area-task') { quickAdd(v, { areaId: ui.view }); renderMain(); refocus('area-new'); }
 });
 let typeT;
 document.addEventListener('input', e => {
   const el = e.target; const t = curTask();
   if (el.dataset && el.dataset.enter === 'qa') {
     ui.qa = el.value;
-    const prev = document.getElementById(el.id + '-prev'); if (prev) prev.innerHTML = qaPreview(el.value);
+    const prev = document.getElementById(el.id + '-prev'); if (prev) prev.innerHTML = ui.view === 'notes' ? '' : qaPreview(el.value);
     return;
   }
   if (el.classList.contains('title-in') && el.tagName === 'TEXTAREA') { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
   if (t && el.id === 't-title') { t.title = el.value; t.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(save, 600); return; }
+  if (el.id === 'note-q') { ui.nq = el.value; const pos = el.selectionStart; renderMain(); const q = $('#note-q'); if (q) { q.focus(); try { q.setSelectionRange(pos, pos); } catch { } } return; }
+  if (el.id === 'n-text' && ui.sheet && ui.sheet.type === 'note') { const n = db.notes[ui.sheet.id]; if (n) { n.text = el.value; n.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(save, 500); } return; }
   if (t && el.id === 't-notes') { t.notes = el.value; t.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(save, 600); return; }
   if (t && el.dataset.sub) { t.subtasks = t.subtasks.map(s => s.id === el.dataset.sub ? { ...s, title: el.value } : s); t.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(save, 600); return; }
   if (ui.sheet && ui.sheet.type === 'event') {
@@ -1206,7 +1508,9 @@ document.addEventListener('change', e => {
       const f = el.value; upd(t, { repeat: f ? { freq: f, interval: 1, day: f === 'monthly' ? pd(t.due || today()).getDate() : undefined } : null, due: t.due || (f ? today() : null) });
       renderSheet(); renderMain(); return;
     }
-    if (el.id === 't-project') { upd(t, { projectId: el.value || null, stageId: null }); renderSheet(); renderMain(); return; }
+    if (el.id === 't-project') { const np = el.value ? db.projects[el.value] : null; upd(t, { projectId: el.value || null, stageId: null, areaId: np && np.areaId ? np.areaId : taskArea(t) }); renderSheet(); renderMain(); return; }
+    if (el.id === 't-area') { const keepP = t.projectId && db.projects[t.projectId] && db.projects[t.projectId].areaId === (el.value || null); upd(t, { areaId: el.value || null, projectId: keepP ? t.projectId : null, stageId: keepP ? t.stageId : null }); renderSheet(); renderMain(); return; }
+    if (el.id === 't-img') { const files = [...(el.files || [])]; el.value = ''; if (files.length) { toast('Adding image…'); addImages(t, files); } return; }
     if (el.id === 't-stage') { upd(t, { stageId: el.value || null }); renderSheet(); renderMain(); return; }
     if (el.id === 't-title' || el.id === 't-notes' || el.dataset.sub) { save(); renderMain(); return; }
   }
@@ -1227,9 +1531,12 @@ document.addEventListener('change', e => {
   const p = ui.projectId && db.projects[ui.projectId];
   if (p) {
     if (el.id === 'proj-deadline') { upd(p, { deadline: el.value || null }); renderMain(); return; }
+    if (el.id === 'proj-area') { upd(p, { areaId: el.value || null }); tasks().filter(x => x.projectId === p.id).forEach(x => upd(x, { areaId: el.value || null })); renderMain(); toast(el.value ? 'Moved to ' + areaOf(el.value).name : 'Removed from section'); return; }
     if (el.id === 'proj-name' || el.dataset.stage) { save(); renderMain(); return; }
     if (el.dataset.stageDue) { upd(p, { stages: p.stages.map(s => s.id === el.dataset.stageDue ? { ...s, due: el.value || null } : s) }); return; }
   }
+  if (el.id === 'r-area') { ui.rArea = el.value; ui.rProj = ''; ui.rKey = ''; renderMain(); return; }
+  if (el.id === 'r-proj') { ui.rProj = el.value; renderMain(); return; }
   if (el.id === 'r-from') { ui.rFrom = el.value; renderMain(); }
   if (el.id === 'r-to') { ui.rTo = el.value; renderMain(); }
 });
@@ -1255,11 +1562,14 @@ function handleLaunch() {
   if (!LS.get('signedIn', false)) return;
   const v = q.get('v'), a = q.get('a'), t = q.get('t'), d = q.get('d');
   if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) { ui.sel = d; ui.month = d.slice(0, 7); ui.view = 'home'; }
-  if (v && ['home', 'tasks', 'repeat', 'projects', 'review'].includes(v)) { ui.view = v; ui.projectId = null; LS.set('view', v); }
-  if (a === 'add') ui.view = ui.view === 'review' ? 'home' : ui.view;
+  if (v === 'repeat') { ui.view = 'tasks'; ui.tFilter = 'repeat'; }
+  else if (v && VIEWS.includes(v) && v !== 'project') { ui.view = v; ui.projectId = null; LS.set('view', v); }
+  if (a === 'add') ui.view = ui.view === 'review' || ui.view === 'notes' ? 'home' : ui.view;
+  if (a === 'note') { ui.view = 'notes'; }
   renderMain();
   if (t && db.tasks[t] && !db.tasks[t].deleted) openSheet({ type: 'task', id: t });
   else if (a === 'event') openEventSheet(null, { date: ui.sel });
+  else if (a === 'note') { const n = newNote(''); openNote(n.id); }
   else if (a === 'add') setTimeout(() => { const i = window.innerWidth >= 900 ? $('#qa-d') : $('#qa-m'); if (i) i.focus(); }, 150);
 }
 

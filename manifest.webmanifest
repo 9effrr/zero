@@ -1,6 +1,6 @@
 {
-  "name": "Zerodocs control",
-  "short_name": "Zerodocs",
+  "name": "Ctrl Z",
+  "short_name": "Ctrl Z",
   "description": "Calendar, tasks and projects in one quiet place.",
   "start_url": "./",
   "scope": "./",
@@ -33,6 +33,18 @@
       "name": "New task",
       "short_name": "Add",
       "url": "./?a=add",
+      "icons": [
+        {
+          "src": "sc-add.png",
+          "sizes": "96x96",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "New note",
+      "short_name": "Note",
+      "url": "./?a=note",
       "icons": [
         {
           "src": "sc-add.png",

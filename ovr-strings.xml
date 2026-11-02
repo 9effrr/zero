@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Ctrl Z</string>
+    <string name="widget_name">Zerodocs control</string>
+    <string name="widget_desc">Today\'s events and urgent tasks</string>
+    <string name="sc_add">New task</string>
+    <string name="sc_note">New note</string>
+    <string name="sc_today">Today</string>
+    <string name="sc_tasks">Tasks</string>
+    <string name="sc_review">Review</string>
+</resources>
