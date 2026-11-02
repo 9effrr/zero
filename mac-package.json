@@ -1,0 +1,23 @@
+{
+  "name": "ctrl-z",
+  "productName": "Ctrl Z",
+  "version": "1.0.0",
+  "description": "Zerodocs control planner",
+  "main": "main.js",
+  "author": "Zerodocs",
+  "devDependencies": {
+    "electron": "33.2.1",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "app.zero.mac",
+    "productName": "Ctrl Z",
+    "files": ["main.js", "package.json"],
+    "mac": {
+      "icon": "icon.png",
+      "category": "public.app-category.productivity",
+      "identity": null,
+      "darkModeSupport": true
+    }
+  }
+}
