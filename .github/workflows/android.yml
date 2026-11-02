@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'zero-widget-src.tgz'
+      - 'ovr-*'
       - '.github/workflows/android.yml'
       - 'app.js'
       - 'index.html'
@@ -31,6 +32,14 @@ jobs:
       - name: Unpack source
         run: tar xzf zero-widget-src.tgz
 
+      - name: Apply newer source files
+        run: |
+          W=android/app/src/main
+          [ -f ovr-MainActivity.kt ] && cp ovr-MainActivity.kt $W/java/app/zero/widget/MainActivity.kt
+          [ -f ovr-strings.xml ] && cp ovr-strings.xml $W/res/values/strings.xml
+          [ -f ovr-shortcuts.xml ] && cp ovr-shortcuts.xml $W/res/xml/shortcuts.xml
+          true
+
       - name: Bundle the app's interface into the APK
         run: |
           mkdir -p android/app/src/main/assets/www
@@ -47,7 +56,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: widget-${{ github.run_number }}
-          name: Zerodocs control ${{ github.run_number }}
+          name: Ctrl Z ${{ github.run_number }}
           body: Android app with home-screen widget. Install zero-widget.apk on your phone or tablet.
           files: zero-widget.apk
           make_latest: true
