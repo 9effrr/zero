@@ -389,3 +389,45 @@ a{color:var(--sand2)}
 .inkw .rule{width:calc(var(--u)*58);height:max(2px,calc(var(--u)*4));margin:0 0 calc(var(--u)*21) calc(var(--u)*30)}
 .inkw .wb{min-height:0;font-size:calc(var(--u)*24);line-height:1.85;padding:0 calc(var(--u)*30) calc(var(--u)*40)}
 .inkw canvas{position:absolute;left:0;top:0;pointer-events:none}
+
+/* ---------- home: sections at a glance ---------- */
+.pulse{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;margin:0 -16px 14px;padding:0 16px;-webkit-overflow-scrolling:touch;scroll-snap-type:x proximity;scroll-padding:0 16px}
+.pulse::-webkit-scrollbar{display:none}
+.pz{flex:0 0 auto;min-width:128px;display:flex;flex-direction:column;gap:5px;text-align:start;background:var(--s1);border:1px solid var(--line);border-radius:12px;padding:8px 11px 9px;color:var(--tx);scroll-snap-align:start}
+.pz:hover{border-color:var(--line2)}
+.pz .pn{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:500;white-space:nowrap}
+.pz .pn .adot{width:7px;height:7px}
+.pz .pc{font-size:11px;color:var(--mut);white-space:nowrap}
+.pz .pc b{color:var(--tx);font-weight:600;font-size:12px}
+.pz .pc em{font-style:normal;color:var(--orange)}
+.pz .pt{display:block;height:3px;border-radius:2px;background:var(--deep)}
+.pz .pt i{display:block;height:3px;border-radius:2px;background:linear-gradient(90deg,var(--s3),var(--sand))}
+@media (min-width:900px){
+  .pulse{display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));overflow:visible;margin:0 0 18px;padding:0}
+  .home .right{position:static}
+}
+.alltasks .seg{margin-top:2px}
+
+/* ---------- to-do lists & trackers ---------- */
+.add3{display:flex;gap:8px;flex-wrap:wrap;margin:-4px 0 4px}
+.lcard{padding:12px 14px 6px}
+.lh{display:flex;align-items:center;gap:8px}
+.lname{flex:1;min-width:0;background:none;border:0;padding:0;text-align:start;font-size:15px;font-weight:600;font-family:var(--ar);color:var(--tx);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lmeta{display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--mut);white-space:nowrap}
+.lh .ib{width:34px;height:34px}
+.litem{display:flex;align-items:center;gap:10px;min-height:42px;border-top:1px solid var(--line)}
+.lcard .litem:first-of-type{border-top:0}
+.litem .chk{width:22px;height:22px;border-radius:7px;border:1.5px solid var(--line2);background:transparent;padding:0;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:var(--ink)}
+.litem .chk.done{border:0;background:var(--green)}
+.litem .lt{flex:1;min-width:0;font-size:14px;font-family:var(--ar);line-height:1.4}
+.litem.isdone .lt{color:var(--mut)}
+.lhist{display:flex;gap:3px;flex-shrink:0}
+.lhist i{width:7px;height:7px;border-radius:2px;background:var(--deep)}
+.lhist i.on{background:var(--green)}
+.lhist i.now{outline:1px solid var(--line2);outline-offset:1px}
+.ltrend{display:flex;align-items:flex-end;gap:4px;height:26px;margin:8px 0 6px}
+.ltrend span{flex:1;height:100%;display:flex;align-items:flex-end;background:var(--deep);border-radius:3px}
+.ltrend i{display:block;width:100%;border-radius:3px;background:var(--green);opacity:.75}
+.ltrend i.zero{background:transparent}
+.sheet .litem .ib{width:34px;height:34px}
+.sheet .litem .ib svg{transform:rotate(90deg)}

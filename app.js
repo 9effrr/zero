@@ -69,10 +69,11 @@ const I = {
 };
 
 /* ---------------- data ---------------- */
-const freshDb = () => ({ v: 1, tasks: {}, projects: {}, notes: {}, log: {}, prefs: { updatedAt: 0 } });
+const freshDb = () => ({ v: 1, tasks: {}, projects: {}, notes: {}, lists: {}, log: {}, prefs: { updatedAt: 0 } });
 let db = LS.get('db', null) || freshDb();
 if (!db.prefs) db.prefs = { updatedAt: 0 };
 if (!db.notes) db.notes = {};
+if (!db.lists) db.lists = {};
 
 /* the five sections of life/work; every task and project can belong to one */
 const AREAS = [
@@ -196,6 +197,7 @@ function merge(l, r) {
     tasks: mergeMap(l.tasks, r.tasks),
     projects: mergeMap(l.projects, r.projects),
     notes: mergeMap(l.notes, r.notes),
+    lists: mergeMap(l.lists, r.lists),
     log: mergeMap(l.log, r.log),
     prefs: ((r.prefs && r.prefs.updatedAt) || 0) > ((l.prefs && l.prefs.updatedAt) || 0) ? r.prefs : (l.prefs || { updatedAt: 0 })
   };
@@ -694,21 +696,21 @@ function quickAdd(text, ctx = {}) {
 }
 
 /* ---------------- UI state ---------------- */
-const VIEWS = ['home', 'notes', 'tasks', ...AREAS.map(a => a.id), 'review', 'project'];
-const TABS = [['home', 'Home'], ['notes', 'Notes'], ['tasks', 'Tasks'], ...AREAS.map(a => [a.id, a.name]), ['review', 'Review']];
+const VIEWS = ['home', 'notes', ...AREAS.map(a => a.id), 'review', 'project'];
+const TABS = [['home', 'Home'], ['notes', 'Notes'], ...AREAS.map(a => [a.id, a.name]), ['review', 'Review']];
 const ui = {
   view: LS.get('view', 'home'), month: today().slice(0, 7), sel: today(), projectId: LS.get('projectId', null),
   sheet: null, qa: '', rDays: 14, rFrom: null, rTo: null, rEvents: null, rKey: '', showDone: false,
   tFilter: 'all', nq: '', rArea: '', rProj: ''
 };
-if (ui.view === 'repeat') { ui.view = 'tasks'; ui.tFilter = 'repeat'; }
+if (ui.view === 'repeat') { ui.view = 'home'; ui.tFilter = 'repeat'; }
+if (ui.view === 'tasks') ui.view = 'home'; /* the Tasks page now lives on Home */
 if (!VIEWS.includes(ui.view)) ui.view = 'home';
 if (ui.view === 'project' && !(ui.projectId && db.projects[ui.projectId] && !db.projects[ui.projectId].deleted)) ui.view = 'home';
 /* what the quick-add bar should attach new tasks to, based on where you are */
 function qaCtx() {
   if (ui.view === 'project' && ui.projectId && db.projects[ui.projectId]) return { projectId: ui.projectId, areaId: db.projects[ui.projectId].areaId || null };
   if (areaOf(ui.view)) return { areaId: ui.view };
-  if (ui.view === 'tasks' && ui.tFilter === 'repeat') return { repeat: { freq: 'monthly', interval: 1 } };
   return {};
 }
 
@@ -803,7 +805,7 @@ function welcomeHTML() {
   </div>`;
 }
 function openCount(aid) { const td = today(); return tasks().filter(t => !t.done && t.due && t.due <= td && (aid === undefined || taskArea(t) === aid)).length; }
-function curTab() { return ui.view === 'project' ? ((db.projects[ui.projectId] || {}).areaId || 'tasks') : ui.view; }
+function curTab() { return ui.view === 'project' ? ((db.projects[ui.projectId] || {}).areaId || 'home') : ui.view; }
 function sideHTML() {
   const cur = curTab();
   const nav = (v, label, extra = '', dot = '') => `<button class="nav ${cur === v ? 'on' : ''}" data-act="nav" data-v="${v}"><span style="display:flex;align-items:center;gap:9px;min-width:0">${dot}${label}</span>${extra}</button>`;
@@ -812,7 +814,6 @@ function sideHTML() {
     <div class="brand"><img src="logo.png" alt="Zerodocs control" width="66" height="40" class="side-logo"> <button class="ib" data-act="settings" aria-label="Settings">${I.gear}</button></div>
     ${nav('home', 'Home')}
     ${nav('notes', 'Notes', c(notes().length))}
-    ${nav('tasks', 'Tasks', c(openCount()))}
     <div class="grp">SECTIONS</div>
     ${AREAS.map(a => nav(a.id, esc(a.name), c(openCount(a.id)), adot(a))).join('')}
     <div class="grp"></div>
@@ -825,7 +826,6 @@ function qaPlaceholder() {
   const c = qaCtx();
   if (c.projectId) return `Add to ${projName(c.projectId)}…`;
   if (c.areaId) return `Add to ${areaOf(c.areaId).name}… e.g. متابعة العقد غداً`;
-  if (c.repeat) return 'New repeating… e.g. دفع الإيجار كل شهر 1/12';
   return 'Add… e.g. مونتاج غداً ٤م #zerodocs';
 }
 function qaHTML(id) {
@@ -870,11 +870,73 @@ function viewHTML() {
   if (areaOf(ui.view)) return areaView(areaOf(ui.view));
   switch (ui.view) {
     case 'notes': return notesView();
-    case 'tasks': return tasksView();
     case 'project': return ui.projectId && db.projects[ui.projectId] && !db.projects[ui.projectId].deleted ? projectView(db.projects[ui.projectId]) : homeView();
     case 'review': return reviewView();
     default: return homeView();
   }
+}
+
+
+/* ---------------- to-do lists & trackers ----------------
+   A list is a checklist. If it repeats (daily / weekly / monthly) its ticks start fresh every
+   period and the old periods are kept, so it works as a habit or money tracker. */
+const LIST_AREAS = ['personal'];
+const REPS = [['', 'Once'], ['daily', 'Daily'], ['weekly', 'Weekly'], ['monthly', 'Monthly']];
+const lists = areaId => Object.values(db.lists || {}).filter(l => !l.deleted && (!areaId || l.areaId === areaId)).sort((a, b) => (a.createdAt || '') < (b.createdAt || '') ? -1 : 1);
+function periodKey(rep, d = today()) {
+  if (rep === 'daily') return d;
+  if (rep === 'weekly') return addD(d, -pd(d).getDay());
+  if (rep === 'monthly') return d.slice(0, 7);
+  return 'all';
+}
+function prevPeriod(rep, k) { return rep === 'daily' ? addD(k, -1) : rep === 'weekly' ? addD(k, -7) : rep === 'monthly' ? monthAdd(k, -1) : k; }
+const periodName = rep => ({ daily: 'today', weekly: 'this week', monthly: 'this month' }[rep] || '');
+function periodLabel(rep, k) {
+  if (rep === 'daily') return pd(k).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric' });
+  if (rep === 'weekly') return 'Week of ' + pd(k).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  if (rep === 'monthly') return pd(k + '-01').toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
+  return '';
+}
+const listChecks = (l, k) => (l.checks && l.checks[k]) || [];
+function newList(areaId) {
+  const l = { id: uid(), name: '', areaId, repeat: '', items: [], checks: {}, createdAt: new Date().toISOString(), updatedAt: now(), deleted: false };
+  db.lists[l.id] = l; save(); return l;
+}
+function updList(l, ch) { Object.assign(l, ch, { updatedAt: now() }); save(); }
+function listCardHTML(l) {
+  const k = periodKey(l.repeat), on = new Set(listChecks(l, k)), n = l.items.length;
+  const done = l.items.filter(i => on.has(i.id)).length;
+  const pct = n ? Math.round(done / n * 100) : 0;
+  /* the last 7 periods, oldest first, for each item */
+  const hist = []; let hk = k; for (let i = 0; i < 7; i++) { hist.unshift(hk); hk = prevPeriod(l.repeat, hk); }
+  const dots = it => l.repeat ? `<span class="lhist" aria-hidden="true">${hist.map(h => `<i class="${listChecks(l, h).includes(it.id) ? 'on' : ''} ${h === k ? 'now' : ''}" title="${esc(periodLabel(l.repeat, h))}"></i>`).join('')}</span>` : '';
+  const items = l.items.map(it => `<div class="litem ${on.has(it.id) ? 'isdone' : ''}"><button class="chk ${on.has(it.id) ? 'done' : ''}" data-act="list-tick" data-id="${esc(l.id)}" data-item="${esc(it.id)}" aria-label="${on.has(it.id) ? 'Untick' : 'Tick'} ${esc(it.title)}" aria-pressed="${on.has(it.id)}">${on.has(it.id) ? I.check : ''}</button><span class="lt" dir="auto">${esc(it.title)}</span>${dots(it)}</div>`).join('');
+  /* how full each past period was */
+  const trend = l.repeat && n ? `<div class="ltrend" aria-label="Last periods">${hist.map(h => { const c = l.items.filter(i => listChecks(l, h).includes(i.id)).length; return `<span title="${esc(periodLabel(l.repeat, h))}: ${c}/${n}"><i style="height:${Math.max(8, Math.round(c / n * 100))}%" class="${c ? '' : 'zero'}"></i></span>`; }).join('')}</div>` : '';
+  return `<div class="card lcard">
+    <div class="lh"><button class="lname" data-act="list-edit" data-id="${esc(l.id)}" dir="auto">${esc(l.name || 'Untitled list')}</button>
+      <span class="lmeta">${l.repeat ? `${I.rep}${esc(REPS.find(r => r[0] === l.repeat)[1])} · ` : ''}${done}/${n}${l.repeat ? ' ' + periodName(l.repeat) : ''}</span>
+      <button class="ib" data-act="list-edit" data-id="${esc(l.id)}" aria-label="Edit list">${I.gear}</button></div>
+    <div class="prog" style="margin:10px 0 6px;height:4px"><i style="width:${pct}%"></i></div>
+    ${items || '<div class="empty" style="padding:6px 0 2px">No items yet.</div>'}
+    ${addForm('list-item', 'Add an item', { id: 'li-' + l.id, data: `data-lid="${esc(l.id)}"` })}
+    ${trend}
+  </div>`;
+}
+function listsHTML(areaId) {
+  const ls = lists(areaId);
+  return sec('To-do lists', `<div class="plist">${ls.map(listCardHTML).join('')}</div>
+    ${ls.length ? '' : '<p class="mut" style="font-size:12px;margin:0 2px">A checklist. Make it repeat daily, weekly or monthly to track habits, spending or anything that comes round again.</p>'}
+    <button class="dash" style="width:100%;margin-top:10px" data-act="new-list" data-area="${areaId}">+ New to-do list</button>`, { right: `<span class="mut">${ls.length}</span>` });
+}
+function listSheet(l) {
+  return `
+  <div class="sheet-top"><button class="ib" data-act="close-sheet" aria-label="Close">${I.l}</button><span class="crumb">To-do list</span><button class="ib" data-act="list-del" data-id="${esc(l.id)}" aria-label="Delete list">${I.trash}</button></div>
+  <textarea id="l-name" class="title-in" rows="1" dir="auto" placeholder="List name, e.g. عادات يومية">${esc(l.name || '')}</textarea>
+  ${sec('Repeats', `<div class="seg" role="group" aria-label="Repeats">${REPS.map(([v, n]) => `<button class="${(l.repeat || '') === v ? 'on' : ''}" data-act="list-rep" data-id="${esc(l.id)}" data-v="${v}" aria-pressed="${(l.repeat || '') === v}">${n}</button>`).join('')}</div>
+    <p class="mut" style="font-size:12px;margin:8px 2px 0;line-height:1.55">${l.repeat ? `Ticks start fresh ${({ daily: 'every day', weekly: 'every Sunday', monthly: 'on the 1st of each month' })[l.repeat]}. Past ${({ daily: 'days', weekly: 'weeks', monthly: 'months' })[l.repeat]} are kept as your history.` : 'A one-off checklist: ticks stay until you untick them.'}</p>`)}
+  ${sec('Items', `${l.items.map((it, i) => `<div class="litem"><span class="lt" dir="auto">${esc(it.title)}</span><button class="ib" data-act="list-up" data-id="${esc(l.id)}" data-i="${i}" aria-label="Move up" ${i ? '' : 'disabled style="opacity:.3"'}>${I.l}</button><button class="ib" data-act="list-item-del" data-id="${esc(l.id)}" data-item="${esc(it.id)}" aria-label="Remove ${esc(it.title)}">${I.x}</button></div>`).join('') || '<div class="empty" style="padding:6px 0">No items yet.</div>'}
+    ${addForm('list-item', 'Add an item', { id: 'ls-new', data: `data-lid="${esc(l.id)}"` })}`)}`;
 }
 
 /* ---------------- views ---------------- */
@@ -904,7 +966,7 @@ function homeView() {
   const selList = sel.ev.map(evHTML).join('') + sel.tk.map(x => taskHTML(x.t, { hideDue: true, ghost: x.ghost, log: x.log })).join('');
   const urgent = tasks().filter(isUrgent).sort(byDue);
   const notThisMonth = m !== td.slice(0, 7) || ui.sel !== td;
-  return `<div class="home">
+  return `${pulseHTML()}<div class="home">
     <div class="left">
       <div class="hdr">
         <h1>${first.toLocaleDateString('en-GB', { month: 'long' })} <span>${first.getFullYear()}</span></h1>
@@ -925,8 +987,22 @@ function homeView() {
         <div class="add-row"><button class="dash" data-act="new-event" data-d="${ui.sel}">+ Event</button><button class="dash" data-act="new-task" data-d="${ui.sel}">+ Task</button></div>
       </section>
       ${urgent.length ? sec('Urgent', urgent.map(t => taskHTML(t)).join(''), { cls: 'or' }) : ''}
+      ${allTasksHTML()}
     </div>
   </div>`;
+}
+/* a small at-a-glance strip: every section's open, done (last 14 days) and late tasks */
+function pulseHTML() {
+  const td = today();
+  const sa = ui.rArea, sp = ui.rProj; ui.rArea = ''; ui.rProj = '';
+  let by; try { by = reviewData(addD(td, -13), td).by; } finally { ui.rArea = sa; ui.rProj = sp; }
+  const rows = AREAS.map(a => [a, by[a.name] || { done: 0, open: 0, overdue: 0 }]);
+  if (by['No section'] && (by['No section'].open || by['No section'].done)) rows.push([null, by['No section']]);
+  const max = Math.max(1, ...rows.map(([, v]) => v.done + v.open));
+  return `<div class="pulse" role="list" aria-label="Sections at a glance">${rows.map(([a, v]) => `<button class="pz" role="listitem" data-act="nav" data-v="${a ? a.id : 'home'}" aria-label="${esc(a ? a.name : 'No section')}: ${v.open} open, ${v.done} done${v.overdue ? ', ' + v.overdue + ' late' : ''}">
+    <span class="pn">${a ? adot(a) : ''}${esc(a ? a.name : 'No section')}</span>
+    <span class="pc"><b>${v.open}</b> open · ${v.done} done${v.overdue ? ` · <em>${v.overdue} late</em>` : ''}</span>
+    <span class="pt"><i style="width:${Math.round((v.done + v.open) / max * 100)}%;${a ? 'background:' + a.color : ''}"></i></span></button>`).join('')}</div>`;
 }
 function noteTitle(n) {
   if ((n.title || '').trim()) return { t: n.title.trim(), p: (n.text || '').trim() };
@@ -1078,20 +1154,20 @@ function notesView() {
   else if (!shown.length) html += '<div class="empty">No notes match.</div>';
   return html + '</div>';
 }
-function tasksView() {
+function allTasksHTML() {
   const seg = (v, l) => `<button class="${ui.tFilter === v ? 'on' : ''}" data-act="tfilter" data-v="${v}" aria-pressed="${ui.tFilter === v}">${l}</button>`;
-  let html = `<div class="narrow"><div class="hdr"><div><div class="sub">Everything, from every section</div><h1>Tasks</h1></div></div>
+  let html = `<section class="sec alltasks"><div class="sec-h"><h2>All tasks</h2><span class="mut">${tasks().filter(t => !t.done).length} open</span></div>
     <div class="seg" role="group" aria-label="Filter" style="margin-bottom:6px">${seg('all', 'By date')}${seg('repeat', 'Repeating')}</div>`;
   if (ui.tFilter === 'repeat') {
     const list = tasks().filter(t => t.repeat).sort(byDue);
     const groups = { daily: [], weekly: [], monthly: [], yearly: [] };
     list.forEach(t => (groups[t.repeat.freq] || groups.monthly).push(t));
-    html += `<p class="mut" style="font-size:12px;margin:10px 2px 0">New items here repeat monthly. Write كل يوم / كل أسبوع / كل سنة to change it.</p>`;
+    html += `<p class="mut" style="font-size:12px;margin:10px 2px 0">To make a task repeat, write كل يوم / كل أسبوع / كل شهر / كل سنة when you add it.</p>`;
     [['daily', 'Daily'], ['weekly', 'Weekly'], ['monthly', 'Monthly'], ['yearly', 'Yearly']].forEach(([k, n]) => {
       if (groups[k].length) html += sec(n, groups[k].map(t => taskHTML(t)).join(''));
     });
     if (!list.length) html += '<div class="empty" style="padding-top:20px">No repeating tasks yet.</div>';
-    return html + '</div>';
+    return html + '</section>';
   }
   const td = today(), tm = addD(td, 1), wk = addD(td, 7);
   const open = tasks().filter(t => !t.done).sort(byDue);
@@ -1111,7 +1187,7 @@ function tasksView() {
   const since = addD(td, -14);
   const done = tasks().filter(t => t.done && t.doneAt && isoDay(t.doneAt) >= since).sort((a, b) => (a.doneAt < b.doneAt ? 1 : -1));
   if (done.length) html += `<section class="sec"><div class="sec-h"><h2>Completed · last 14 days</h2><button class="pill" data-act="show-done">${ui.showDone ? 'Hide' : 'Show ' + done.length}</button></div>${ui.showDone ? done.map(t => taskHTML(t)).join('') : ''}</section>`;
-  return html + '</div>';
+  return html + '</section>';
 }
 function areaView(a) {
   const ps = areaProjects(a.id);
@@ -1122,10 +1198,12 @@ function areaView(a) {
   const openAll = all.filter(t => !t.done);
   const overdue = openAll.filter(isOverdue).length;
   let html = `<div class="narrow">
-    <div class="hdr"><div><div class="sub">${openAll.length} open${overdue ? ` · <span class="or">${overdue} overdue</span>` : ''} · ${ps.length} ${ps.length === 1 ? 'project' : 'projects'}</div><h1 class="area-h">${adot(a)}${esc(a.name)}</h1></div></div>`;
+    <div class="hdr"><div><div class="sub">${openAll.length} open${overdue ? ` · <span class="or">${overdue} overdue</span>` : ''} · ${ps.length} ${ps.length === 1 ? 'project' : 'projects'}</div><h1 class="area-h">${adot(a)}${esc(a.name)}</h1></div></div>
+    ${LIST_AREAS.includes(a.id) ? `<div class="add3"><button class="pill" data-act="focus" data-f="area-new">+ Task</button><button class="pill" data-act="focus" data-f="proj-new">+ Project</button><button class="pill" data-act="new-list" data-area="${a.id}">+ To-do list</button></div>` : ''}`;
   html += sec('Projects', `<div class="plist">${ps.map(pcardHTML).join('')}</div>
     <div class="card" style="padding:0 6px 0 14px;margin-top:${ps.length ? 10 : 0}px">${addForm('proj', 'New project in ' + a.name, { id: 'proj-new' })}</div>
     ${ps.length ? '' : '<p class="mut" style="font-size:12px;margin:8px 2px 0">A project keeps one goal’s tasks together, split into stages if you like.</p>'}`);
+  if (LIST_AREAS.includes(a.id)) html += listsHTML(a.id);
   html += sec('Tasks', `${open.map(t => taskHTML(t, { inArea: true })).join('') || '<div class="empty" style="padding:6px 0 4px">No loose tasks.</div>'}
     ${addForm('area-task', 'Add a task to ' + a.name, { id: 'area-new' })}`, { right: `<span class="mut">${open.length}</span>` });
   if (done.length) html += `<section class="sec"><div class="sec-h"><h2>Completed</h2><button class="pill" data-act="show-done">${ui.showDone ? 'Hide' : 'Show ' + done.length}</button></div>${ui.showDone ? done.slice(0, 40).map(t => taskHTML(t, { inArea: true })).join('') : ''}</section>`;
@@ -1148,7 +1226,7 @@ function projectView(p) {
       ${addForm('stage', st ? 'Add task to ' + st.name : 'Add task', { id: 'add-' + (st ? st.id : 'none'), data: `data-sid="${st ? esc(st.id) : ''}"` })}</div>`;
   };
   return `<div class="pview">
-    <div class="hdr" style="margin-bottom:8px"><button class="pill" data-act="nav" data-v="${a ? a.id : 'tasks'}" style="display:inline-flex;align-items:center;gap:6px;padding-left:8px">${I.l}${a ? adot(a) + esc(a.name) : 'Tasks'}</button><button class="ib" data-act="del-project" aria-label="Delete project">${I.trash}</button></div>
+    <div class="hdr" style="margin-bottom:8px"><button class="pill" data-act="nav" data-v="${a ? a.id : 'home'}" style="display:inline-flex;align-items:center;gap:6px;padding-left:8px">${I.l}${a ? adot(a) + esc(a.name) : 'Home'}</button><button class="ib" data-act="del-project" aria-label="Delete project">${I.trash}</button></div>
     <input id="proj-name" class="title-in" style="font-size:28px" dir="auto" value="${esc(p.name)}" aria-label="Project name">
     <div style="display:flex;align-items:center;gap:10px;margin:10px 0 12px;flex-wrap:wrap;font-size:13px" class="mut">
       <span>${s.done} of ${s.total} done</span><span>·</span>
@@ -1420,7 +1498,9 @@ function closeSheet() {
 window.addEventListener('popstate', () => { if (ui.sheet) { cleanupNote(); ui.sheet = null; renderSheet(); renderMain(); } });
 /* a note left empty disappears when you close it */
 function cleanupNote() {
-  const s = ui.sheet; if (!s || s.type !== 'note') return;
+  const s = ui.sheet;
+  if (s && s.type === 'list') { const l = db.lists[s.id]; if (l && !l.deleted && !(l.name || '').trim() && !l.items.length) { updList(l, { deleted: true }); } return; }
+  if (!s || s.type !== 'note') return;
   const n = db.notes[s.id]; if (!n) return;
   clearTimeout(typeT);
   if (!(n.text || '').trim() && !(n.title || '').trim() && !hasInk(n)) { n.deleted = true; n.updatedAt = now(); }
@@ -1451,6 +1531,7 @@ function renderSheet() {
   else if (s.type === 'settings') inner = settingsSheet();
   else if (s.type === 'note') { const n = db.notes[s.id]; if (!n || n.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = noteSheet(n); }
   else if (s.type === 'image') inner = imageSheet(s);
+  else if (s.type === 'list') { const l = db.lists[s.id]; if (!l || l.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = listSheet(l); }
   const sc = $('.sheet', root); const top = sc ? sc.scrollTop : 0;
   if (s.type === 'note') { const nb = $('#n-body', root); const nt = nb ? nb.scrollTop : 0; root.innerHTML = inner; growNote(); bindInk(); const b2 = $('#n-body', root); if (b2) { b2.scrollTop = nt; drawInkView(); } return; }
   root.innerHTML = `<div class="sheet-bg" data-act="close-sheet"></div><div class="sheet" role="dialog" aria-modal="true" aria-label="${s.type}">${inner}</div>`;
@@ -1607,7 +1688,7 @@ document.addEventListener('click', e => {
     case 'open-project': closeSheetQuiet(); openProject(el.dataset.id); break;
     case 'add-stage': { const p = db.projects[ui.projectId]; if (p) { const st = { id: uid(), name: 'New stage', due: null }; upd(p, { stages: [...(p.stages || []), st] }); renderMain(); setTimeout(() => { const i = document.getElementById('st-' + st.id); if (i) { i.focus(); i.select(); } }, 30); } break; }
     case 'del-stage': { const p = db.projects[ui.projectId]; if (p && confirm('Delete this stage? Its tasks stay in the project.')) { tasks().filter(x => x.stageId === el.dataset.sid).forEach(x => upd(x, { stageId: null })); upd(p, { stages: p.stages.filter(s => s.id !== el.dataset.sid) }); renderMain(); } break; }
-    case 'del-project': { const p = db.projects[ui.projectId]; if (p && confirm(`Delete project “${p.name}”? Its tasks are kept without a project.`)) { tasks().filter(x => x.projectId === p.id).forEach(x => upd(x, { projectId: null, stageId: null, areaId: x.areaId || p.areaId || null })); upd(p, { deleted: true }); go(p.areaId || 'tasks'); } break; }
+    case 'del-project': { const p = db.projects[ui.projectId]; if (p && confirm(`Delete project “${p.name}”? Its tasks are kept without a project.`)) { tasks().filter(x => x.projectId === p.id).forEach(x => upd(x, { projectId: null, stageId: null, areaId: x.areaId || p.areaId || null })); upd(p, { deleted: true }); go(p.areaId || 'home'); } break; }
     case 'range': ui.rDays = +el.dataset.n; if (ui.rDays === 0 && !ui.rFrom) { const [f, to] = [addD(today(), -13), today()]; ui.rFrom = f; ui.rTo = to; } renderMain(); break;
     case 'copy-md': { const [f, to] = reviewRange(); copyText(buildMarkdown(reviewData(f, to))).then(ok => toast(ok ? 'Copied — paste it in a chat with Claude' : 'Copy failed')); break; }
     case 'save-md': saveReviewToDrive(); break;
@@ -1619,6 +1700,14 @@ document.addEventListener('click', e => {
     case 'pin-widget': try { ZeroNative.pinWidget(); } catch { } break;
     case 'install': if (deferredPrompt) { deferredPrompt.prompt(); deferredPrompt.userChoice.finally(() => { deferredPrompt = null; renderSheet(); }); } break;
     case 'show-done': ui.showDone = !ui.showDone; renderMain(); break;
+    case 'focus': { const f = document.getElementById(el.dataset.f); if (f) { f.scrollIntoView({ block: 'center', behavior: 'smooth' }); setTimeout(() => f.focus(), 250); } break; }
+    case 'new-list': { const l = newList(el.dataset.area || 'personal'); openSheet({ type: 'list', id: l.id }); setTimeout(() => { const i = $('#l-name'); if (i) i.focus(); }, 80); break; }
+    case 'list-edit': if (db.lists[el.dataset.id]) openSheet({ type: 'list', id: el.dataset.id }); break;
+    case 'list-tick': { const l = db.lists[el.dataset.id]; if (!l) break; const k = periodKey(l.repeat); const cur = new Set(listChecks(l, k)); const it = el.dataset.item; cur.has(it) ? cur.delete(it) : cur.add(it); updList(l, { checks: { ...(l.checks || {}), [k]: [...cur] } }); renderMain(); break; }
+    case 'list-rep': { const l = db.lists[el.dataset.id]; if (l) { updList(l, { repeat: el.dataset.v }); renderSheet(); renderMain(); } break; }
+    case 'list-up': { const l = db.lists[el.dataset.id]; const i = +el.dataset.i; if (l && i > 0) { const it = [...l.items]; [it[i - 1], it[i]] = [it[i], it[i - 1]]; updList(l, { items: it }); renderSheet(); renderMain(); } break; }
+    case 'list-item-del': { const l = db.lists[el.dataset.id]; if (l) { updList(l, { items: l.items.filter(x => x.id !== el.dataset.item) }); renderSheet(); renderMain(); } break; }
+    case 'list-del': { const l = db.lists[el.dataset.id]; if (l && (!l.items.length || confirm(`Delete “${l.name || 'this list'}” and its history?`))) { updList(l, { deleted: true }); closeSheet(); toast('List deleted'); } break; }
     case 'qa-go': { const i = document.getElementById(el.dataset.for); if (i) submitQA(i); break; }
   }
 });
@@ -1671,6 +1760,7 @@ document.addEventListener('submit', e => {
     renderMain(); refocus(input.id);
   }
   else if (kind === 'stage') { quickAdd(v, { projectId: ui.projectId, areaId: (db.projects[ui.projectId] || {}).areaId || null, stageId: f.dataset.sid || null }); renderMain(); refocus(input.id); }
+  else if (kind === 'list-item') { const l = db.lists[f.dataset.lid]; if (l) { updList(l, { items: [...l.items, { id: uid(), title: v }] }); renderMain(); if (ui.sheet && ui.sheet.type === 'list') renderSheet(); refocus(input.id); } }
   else if (kind === 'proj') { const aid = areaOf(ui.view) ? ui.view : null; const p = newProject(v, aid); toast('Project created'); openProject(p.id); }
   else if (kind === 'area-task') { quickAdd(v, { areaId: ui.view }); renderMain(); refocus('area-new'); }
 });
@@ -1684,6 +1774,7 @@ document.addEventListener('input', e => {
   }
   if (el.classList.contains('title-in') && el.tagName === 'TEXTAREA') { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
   if (t && el.id === 't-title') { t.title = el.value; t.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(save, 600); return; }
+  if (el.id === 'l-name' && ui.sheet && ui.sheet.type === 'list') { const l = db.lists[ui.sheet.id]; if (l) { l.name = el.value; l.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(() => { save(); renderMain(); }, 500); } return; }
   if (el.id === 'note-q') { ui.nq = el.value; const pos = el.selectionStart; renderMain(); const q = $('#note-q'); if (q) { q.focus(); try { q.setSelectionRange(pos, pos); } catch { } } return; }
   if ((el.id === 'n-text' || el.id === 'n-title') && ui.sheet && ui.sheet.type === 'note') {
     const n = db.notes[ui.sheet.id];
@@ -1776,7 +1867,7 @@ function handleLaunch() {
   if (!LS.get('signedIn', false)) return;
   const v = q.get('v'), a = q.get('a'), t = q.get('t'), d = q.get('d');
   if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) { ui.sel = d; ui.month = d.slice(0, 7); ui.view = 'home'; }
-  if (v === 'repeat') { ui.view = 'tasks'; ui.tFilter = 'repeat'; }
+  if (v === 'repeat' || v === 'tasks') { ui.view = 'home'; ui.projectId = null; LS.set('view', 'home'); if (v === 'repeat') ui.tFilter = 'repeat'; }
   else if (v && VIEWS.includes(v) && v !== 'project') { ui.view = v; ui.projectId = null; LS.set('view', v); }
   if (a === 'add') ui.view = ui.view === 'review' || ui.view === 'notes' ? 'home' : ui.view;
   if (a === 'note') { ui.view = 'notes'; }
