@@ -1014,7 +1014,7 @@ function projectView(p) {
     return `<div class="stage">${head}${list.map(t => taskHTML(t, { inArea: true, inProject: true })).join('')}
       ${addForm('stage', st ? 'Add task to ' + st.name : 'Add task', { id: 'add-' + (st ? st.id : 'none'), data: `data-sid="${st ? esc(st.id) : ''}"` })}</div>`;
   };
-  return `<div class="narrow">
+  return `<div class="pview">
     <div class="hdr" style="margin-bottom:8px"><button class="pill" data-act="nav" data-v="${a ? a.id : 'tasks'}" style="display:inline-flex;align-items:center;gap:6px;padding-left:8px">${I.l}${a ? adot(a) + esc(a.name) : 'Tasks'}</button><button class="ib" data-act="del-project" aria-label="Delete project">${I.trash}</button></div>
     <input id="proj-name" class="title-in" style="font-size:28px" dir="auto" value="${esc(p.name)}" aria-label="Project name">
     <div style="display:flex;align-items:center;gap:10px;margin:10px 0 12px;flex-wrap:wrap;font-size:13px" class="mut">
@@ -1024,11 +1024,50 @@ function projectView(p) {
       <label style="display:flex;align-items:center;gap:6px">Section <select id="proj-area" class="mini-sel"><option value="">None</option>${AREAS.map(x => `<option value="${x.id}" ${p.areaId === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
     </div>
     <div class="prog"><i style="width:${s.pct}%"></i></div>
+    ${boardHTML(p, ts)}
     ${linked.length ? sec('Linked events', linked.map(evHTML).join('')) : ''}
+    <div class="sec-h" style="margin-top:26px"><h2>${(p.stages || []).length ? 'Stages' : 'List'}</h2></div>
     ${(p.stages || []).map(stageBlock).join('')}
     ${stageBlock(null)}
     <div style="margin-top:22px"><button class="dash" style="width:100%" data-act="add-stage">+ Add stage</button></div>
   </div>`;
+}
+
+/* ---------------- project board (To do / Doing / Done) ---------------- */
+function kcol(t) { return t.done ? 'done' : t.status === 'doing' ? 'doing' : 'todo'; }
+function kcardHTML(t, p) {
+  const col = kcol(t);
+  const st = t.stageId && (p.stages || []).find(x => x.id === t.stageId);
+  const bits = [];
+  if (st) bits.push(`<span class="kst" dir="auto">${esc(st.name)}</span>`);
+  if (t.due && !t.done) bits.push(`<span class="${isOverdue(t) ? 'or' : ''}">${esc(relDay(t.due) + (t.time ? ' ' + t.time : ''))}</span>`);
+  if (t.done && t.doneAt) bits.push(esc(shortDay(isoDay(t.doneAt))));
+  const subs = (t.subtasks || []).length; if (subs) bits.push(`${(t.subtasks || []).filter(x => x.done).length}/${subs}`);
+  const mv = (to, label, cls = '') => `<button class="kmv ${cls}" data-act="kmove" data-id="${esc(t.id)}" data-to="${to}" aria-label="${label}">${label}</button>`;
+  const btns = col === 'todo' ? mv('doing', 'Start →')
+    : col === 'doing' ? mv('todo', '← To do') + mv('done', 'Done ✓', 'ok')
+    : mv('doing', '↺ Reopen');
+  return `<div class="kcard ${isUrgent(t) && !t.done ? 'urg' : ''}" draggable="true" data-kid="${esc(t.id)}">
+    <button class="kb" data-act="open-task" data-id="${esc(t.id)}"><span class="tt" dir="auto">${esc(t.title || 'Untitled')}</span>${bits.length ? `<span class="km">${bits.join(' · ')}</span>` : ''}</button>
+    <div class="kbtns">${btns}</div></div>`;
+}
+function boardHTML(p, ts) {
+  const cols = [['todo', 'To do'], ['doing', 'Doing'], ['done', 'Done']];
+  const by = { todo: [], doing: [], done: [] };
+  ts.forEach(t => by[kcol(t)].push(t));
+  by.todo.sort(byDue); by.doing.sort(byDue);
+  by.done.sort((a, b) => ((a.doneAt || '') < (b.doneAt || '') ? 1 : -1));
+  return `<div class="kboard" id="kboard">${cols.map(([k, l]) => `<section class="kcol k-${k}" data-kcol="${k}">
+      <div class="kh"><span>${l}</span><span class="kn num">${by[k].length}</span></div>
+      <div class="klist">${by[k].map(t => kcardHTML(t, p)).join('') || `<div class="kempty">${k === 'done' ? 'Nothing finished yet' : 'Empty'}</div>`}</div>
+      ${k !== 'done' ? addForm('board', 'Add card', { id: 'kadd-' + k, cls: 'kadd', data: `data-st="${k}"` }) : ''}
+    </section>`).join('')}</div>`;
+}
+function kmove(t, to) {
+  if (!t) return;
+  if (to === 'done') { if (!t.done) toggleDone(t); if (!t.repeat) upd(t, { status: 'done' }); return; }
+  if (t.done) toggleDone(t);
+  upd(t, { status: to });
 }
 
 /* ---------------- review ---------------- */
@@ -1412,6 +1451,7 @@ document.addEventListener('click', e => {
     case 'prev': setMonth(monthAdd(ui.month, -1)); break;
     case 'next': setMonth(monthAdd(ui.month, 1)); break;
     case 'today': ui.sel = today(); setMonth(today().slice(0, 7)); break;
+    case 'kmove': { kmove(db.tasks[el.dataset.id], el.dataset.to); renderMain(); break; }
     case 'toggle': { const x = db.tasks[el.dataset.id]; if (x) { toggleDone(x); renderMain(); if (ui.sheet) renderSheet(); } break; }
     case 'open-task': if (db.tasks[el.dataset.id] && !db.tasks[el.dataset.id].deleted) openSheet({ type: 'task', id: el.dataset.id }); break;
     case 'open-ev': { const ev = findEv(el.dataset.k); if (ev) openEventSheet(ev); break; }
@@ -1488,6 +1528,12 @@ document.addEventListener('submit', e => {
   if (!v) { input.focus(); return; }
   if (kind === 'sub' && t) { upd(t, { subtasks: [...(t.subtasks || []), { id: uid(), title: v, done: false }] }); renderSheet(); renderMain(); refocus('s-new'); }
   else if (kind === 'link' && t) { const url = /^https?:\/\//i.test(v) ? v : 'https://' + v; upd(t, { links: [...(t.links || []), url] }); renderSheet(); }
+  else if (kind === 'board') {
+    const before = new Set(Object.keys(db.tasks));
+    quickAdd(v, { projectId: ui.projectId, areaId: (db.projects[ui.projectId] || {}).areaId || null });
+    if (f.dataset.st === 'doing') Object.keys(db.tasks).filter(k => !before.has(k)).forEach(k => upd(db.tasks[k], { status: 'doing' }));
+    renderMain(); refocus(input.id);
+  }
   else if (kind === 'stage') { quickAdd(v, { projectId: ui.projectId, areaId: (db.projects[ui.projectId] || {}).areaId || null, stageId: f.dataset.sid || null }); renderMain(); refocus(input.id); }
   else if (kind === 'proj') { const aid = areaOf(ui.view) ? ui.view : null; const p = newProject(v, aid); toast('Project created'); openProject(p.id); }
   else if (kind === 'area-task') { quickAdd(v, { areaId: ui.view }); renderMain(); refocus('area-new'); }
@@ -1577,6 +1623,12 @@ document.addEventListener('visibilitychange', () => {
   if (authed()) { sync(); refreshMonth(ui.month, true); }
 });
 setInterval(() => { if (document.visibilityState === 'visible' && authed()) { refreshMonth(ui.month, true); if (LS.get('dirty', false)) sync(); } }, 5 * 60e3);
+
+/* board: drag cards between columns */
+document.addEventListener('dragstart', e => { const c = e.target.closest && e.target.closest('.kcard'); if (!c) return; e.dataTransfer.setData('text/plain', c.dataset.kid); e.dataTransfer.effectAllowed = 'move'; c.classList.add('drag'); });
+document.addEventListener('dragend', e => { const c = e.target.closest && e.target.closest('.kcard'); if (c) c.classList.remove('drag'); document.querySelectorAll('.kcol.over').forEach(x => x.classList.remove('over')); });
+document.addEventListener('dragover', e => { const col = e.target.closest && e.target.closest('.kcol'); if (!col) return; e.preventDefault(); document.querySelectorAll('.kcol.over').forEach(x => x !== col && x.classList.remove('over')); col.classList.add('over'); });
+document.addEventListener('drop', e => { const col = e.target.closest && e.target.closest('.kcol'); if (!col) return; e.preventDefault(); const t = db.tasks[e.dataTransfer.getData('text/plain')]; if (t && kcol(t) !== col.dataset.kcol) { kmove(t, col.dataset.kcol); renderMain(); } });
 
 /* launch links from home-screen shortcuts and the widget: ?v=view  ?a=add|event  ?t=taskId  ?d=YYYY-MM-DD */
 function handleLaunch() {

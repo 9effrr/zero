@@ -67,9 +67,12 @@ object Data {
         ctx.checkSelfPermission(Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED
 
     /** Today's events from the phone's calendar (synced from Google Calendar). Null when permission is missing. */
-    fun todayEvents(ctx: Context): List<Row>? {
+    fun todayEvents(ctx: Context): List<Row>? = eventsOn(ctx, Calendar.getInstance())
+
+    /** Events on one day. Null when calendar permission is missing. */
+    fun eventsOn(ctx: Context, day: Calendar): List<Row>? {
         if (!hasCalendar(ctx)) return null
-        val start = Calendar.getInstance().apply {
+        val start = (day.clone() as Calendar).apply {
             set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
         }
         val end = (start.clone() as Calendar).apply { add(Calendar.DAY_OF_MONTH, 1) }
@@ -102,7 +105,7 @@ object Data {
                     val status = c.getInt(4)
                     if (status == CalendarContract.Attendees.ATTENDEE_STATUS_DECLINED) continue
                     if (isAllDay) {
-                        // All-day events are stored in UTC; keep only those that cover today's date.
+                        // All-day events are stored in UTC; keep only those that cover this date.
                         val s = key(Calendar.getInstance(utc).apply { timeInMillis = begin })
                         val e = key(Calendar.getInstance(utc).apply { timeInMillis = stop })
                         if (today < s || today >= e) continue
@@ -116,6 +119,42 @@ object Data {
             return null
         }
         return allDay + timed.sortedBy { it.first }.map { it.second }
+    }
+
+    /** Dates (yyyy-MM-dd) in [from, to) that have at least one calendar event. */
+    fun eventDays(ctx: Context, from: Calendar, to: Calendar): Set<String> {
+        if (!hasCalendar(ctx)) return emptySet()
+        val out = HashSet<String>()
+        val uri = CalendarContract.Instances.CONTENT_URI.buildUpon().also {
+            ContentUris.appendId(it, from.timeInMillis)
+            ContentUris.appendId(it, to.timeInMillis)
+        }.build()
+        val proj = arrayOf(
+            CalendarContract.Instances.BEGIN,
+            CalendarContract.Instances.END,
+            CalendarContract.Instances.ALL_DAY,
+            CalendarContract.Instances.SELF_ATTENDEE_STATUS
+        )
+        val lo = key(from); val hi = key(to)
+        val utc = TimeZone.getTimeZone("UTC")
+        try {
+            ctx.contentResolver.query(uri, proj, "${CalendarContract.Instances.VISIBLE}=1", null, null)?.use { c ->
+                while (c.moveToNext()) {
+                    if (c.getInt(3) == CalendarContract.Attendees.ATTENDEE_STATUS_DECLINED) continue
+                    val allDay = c.getInt(2) == 1
+                    val tz = if (allDay) utc else TimeZone.getDefault()
+                    val d = Calendar.getInstance(tz).apply { timeInMillis = c.getLong(0) }
+                    val endMs = c.getLong(1).let { if (allDay) it - 1 else maxOf(it - 1, c.getLong(0)) }
+                    var n = 0
+                    while (d.timeInMillis <= endMs && n < 45) {
+                        val k = key(d)
+                        if (k >= lo && k < hi) out += k
+                        d.add(Calendar.DAY_OF_MONTH, 1); n++
+                    }
+                }
+            }
+        } catch (e: SecurityException) { }
+        return out
     }
 
     fun cacheFile(ctx: Context) = File(ctx.filesDir, Zero.DATA_FILE)
@@ -165,4 +204,48 @@ object Data {
             .map { Row(it.title, meta(it), Zero.GRAY, Zero.BASE + "?t=" + it.id) }
         return urgent + todays
     }
+
+    private fun openTasks(ctx: Context): Pair<JSONObject, JSONObject?>? {
+        val f = cacheFile(ctx)
+        if (!f.exists()) return null
+        val root = try { JSONObject(f.readText()) } catch (e: Exception) { return null }
+        return (root.optJSONObject("tasks") ?: JSONObject()) to root.optJSONObject("projects")
+    }
+
+    /** Tasks shown under a chosen date: today uses the urgent + today list; other days list what is due then. */
+    fun tasksOn(ctx: Context, day: String): List<Row>? {
+        if (day == todayKey()) return tasks(ctx)
+        val (ts, ps) = openTasks(ctx) ?: return null
+        val out = mutableListOf<Pair<String, Row>>()
+        val keys = ts.keys()
+        while (keys.hasNext()) {
+            val id = keys.next()
+            val t = ts.optJSONObject(id) ?: continue
+            if (t.optBoolean("deleted") || t.str("due") != day) continue
+            val pid = t.str("projectId")
+            val p = if (pid.isNotEmpty()) ps?.optJSONObject(pid) else null
+            val bits = mutableListOf<String>()
+            if (p != null && !p.optBoolean("deleted")) bits += p.str("name")
+            if (t.str("time").isNotEmpty()) bits += t.str("time")
+            if (t.optBoolean("done")) bits += "Done"
+            val color = when { t.optBoolean("done") -> 0xFF56606E.toInt(); t.optBoolean("urgent") -> Zero.ORANGE; else -> Zero.GRAY }
+            out += t.str("time").ifEmpty { "99" } to Row(t.str("title").ifBlank { "Untitled" }, bits.joinToString(" · "), color, Zero.BASE + "?t=" + id)
+        }
+        return out.sortedBy { it.first }.map { it.second }
+    }
+
+    /** Dates that have an open task due. */
+    fun taskDays(ctx: Context): Set<String> {
+        val (ts, _) = openTasks(ctx) ?: return emptySet()
+        val out = HashSet<String>()
+        val keys = ts.keys()
+        while (keys.hasNext()) {
+            val t = ts.optJSONObject(keys.next()) ?: continue
+            if (t.optBoolean("deleted") || t.optBoolean("done")) continue
+            val d = t.str("due"); if (d.isNotEmpty()) out += d
+        }
+        return out
+    }
+
+    fun keyOf(c: Calendar): String = key(c)
 }
