@@ -152,6 +152,12 @@ class MainActivity : ComponentActivity() {
         if (q != null) web.loadUrl("$HOME?$q")
     }
 
+    override fun onResume() {
+        super.onResume()
+        // take in notes written on the pen page
+        if (::web.isInitialized) web.evaluateJavascript("window.__zeroInkPull && window.__zeroInkPull()", null)
+    }
+
     override fun onPause() {
         super.onPause()
         if (Prefs(this).connected) Sync.now(this) // the widget picks up changes made in the app
@@ -252,6 +258,24 @@ class MainActivity : ComponentActivity() {
         @JavascriptInterface fun pinWidget() = runOnUiThread { this@MainActivity.pinWidget() }
 
         @JavascriptInterface fun save(name: String, mime: String, text: String) = runOnUiThread { this@MainActivity.save(name, mime, text) }
+
+        @JavascriptInterface fun isTablet(): Boolean = resources.configuration.smallestScreenWidthDp >= 600
+
+        /** Opens a note on the native pen page. The note travels through a file: handwriting can be large. */
+        @JavascriptInterface fun openInk(json: String) {
+            val id = try { JSONObject(json).getString("id") } catch (e: Exception) { return }
+            InkActivity.openFile(this@MainActivity).writeText(json)
+            runOnUiThread {
+                startActivity(Intent(this@MainActivity, InkActivity::class.java).putExtra(InkActivity.EXTRA_ID, id))
+                overridePendingTransition(0, 0)
+            }
+        }
+
+        @JavascriptInterface fun takeInk(): String = org.json.JSONArray(InkActivity.pending(this@MainActivity)).toString()
+
+        @JavascriptInterface fun ackInk(id: String, updatedAt: String) {
+            InkActivity.ack(this@MainActivity, id, updatedAt.toLongOrNull() ?: return)
+        }
 
         @JavascriptInterface fun version(): String = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
     }

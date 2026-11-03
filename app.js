@@ -859,6 +859,7 @@ function renderMain() {
     if (on && (on.offsetLeft < tb.scrollLeft || on.offsetLeft + on.offsetWidth > tb.scrollLeft + tb.clientWidth)) tb.scrollLeft = on.offsetLeft - (tb.clientWidth - on.offsetWidth) / 2;
   }
   if (keep) { const el = document.getElementById(keep.id); if (el) { el.value = keep.v; el.focus(); try { el.setSelectionRange(keep.s, keep.e); } catch { } } }
+  if (ui.view === 'notes') drawThumbs();
 }
 function softRender() {
   const a = document.activeElement;
@@ -929,8 +930,140 @@ function homeView() {
 }
 function noteTitle(n) {
   if ((n.title || '').trim()) return { t: n.title.trim(), p: (n.text || '').trim() };
-  const l = (n.text || '').trim().split('\n'); return { t: l[0] || 'Empty note', p: l.slice(1).join('\n').trim() };
+  const l = (n.text || '').trim().split('\n'); return { t: l[0] || (hasInk(n) ? 'Handwritten note' : 'Empty note'), p: l.slice(1).join('\n').trim() };
 }
+
+/* ---------------- handwriting (written on the tablet's native pen page) ---------------- */
+/* Strokes are stored in page units: the page is 1000 units wide on every device.
+   drawInk follows exactly the same rules as Ink.kt in the Android app. */
+const INK_PAGE = 1000;
+const INK_TABLET = (() => { try { return NATIVE && !!ZeroNative.isTablet && !!ZeroNative.openInk && ZeroNative.isTablet(); } catch { return false; } })();
+const hasInk = n => !!(n && n.ink && n.ink.s && n.ink.s.length);
+const inkCache = new WeakMap();
+function inkStrokes(ink) {
+  if (!ink || !ink.s) return [];
+  let c = inkCache.get(ink); if (c) return c;
+  c = ink.s.map(o => {
+    const d = o.p || []; const n = Math.floor(d.length / 3); const p = new Float32Array(n * 3);
+    let x = 0, y = 0, r = 0, t = Infinity, b = -Infinity, l = Infinity, rt = -Infinity;
+    for (let i = 0; i < n; i++) {
+      x += d[i * 3]; y += d[i * 3 + 1]; r += d[i * 3 + 2];
+      p[i * 3] = x / 2; p[i * 3 + 1] = y / 2; p[i * 3 + 2] = r / 100;
+      t = Math.min(t, y / 2); b = Math.max(b, y / 2); l = Math.min(l, x / 2); rt = Math.max(rt, x / 2);
+    }
+    const w = +o.w || 3, pad = w * 1.3;
+    return { t: o.t || 'pen', c: o.c || '#ECE6DE', w, p, n, top: t - pad, bot: b + pad, left: l - pad, right: rt + pad };
+  });
+  inkCache.set(ink, c); return c;
+}
+const inkBottom = ink => inkStrokes(ink).reduce((m, s) => Math.max(m, s.bot), 0);
+const penW = (w, p) => w * (0.4 + 0.8 * Math.pow(Math.min(1, Math.max(0, p)), 0.9));
+function drawInk(ctx, list, s, top = -Infinity, bottom = Infinity) {
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (const pass of [0, 1]) for (const st of list) {
+    if ((st.t === 'hl') !== (pass === 0)) continue;
+    if (st.bot * s < top || st.top * s > bottom) continue;
+    const p = st.p, n = st.n; if (!n) continue;
+    ctx.globalAlpha = st.t === 'hl' ? 0.38 : st.t === 'pencil' ? 0.82 : 1;
+    ctx.strokeStyle = ctx.fillStyle = st.c;
+    const dot = r => { ctx.beginPath(); ctx.arc(p[0] * s, p[1] * s, Math.max(r, 0.3), 0, Math.PI * 2); ctx.fill(); };
+    if (st.t === 'pen') {
+      if (n === 1) { dot(penW(st.w, p[2]) * s / 2); continue; }
+      const buckets = new Map();
+      for (let i = 1; i < n; i++) {
+        const k = Math.max(1, Math.round(penW(st.w, (p[i * 3 - 1] + p[i * 3 + 2]) / 2) * 4));
+        let a = buckets.get(k); if (!a) buckets.set(k, a = []); a.push(i);
+      }
+      for (const [k, a] of buckets) {
+        ctx.lineWidth = k / 4 * s; ctx.beginPath();
+        for (const i of a) { ctx.moveTo(p[i * 3 - 3] * s, p[i * 3 - 2] * s); ctx.lineTo(p[i * 3] * s, p[i * 3 + 1] * s); }
+        ctx.stroke();
+      }
+      continue;
+    }
+    const w = st.t === 'pencil' ? st.w * 0.9 : st.w;
+    if (n === 1) { dot(w * s / 2); continue; }
+    ctx.lineWidth = w * s; ctx.beginPath(); ctx.moveTo(p[0] * s, p[1] * s);
+    if (n === 2) ctx.lineTo(p[3] * s, p[4] * s);
+    else {
+      for (let i = 1; i < n - 1; i++) ctx.quadraticCurveTo(p[i * 3] * s, p[i * 3 + 1] * s, (p[i * 3] + p[i * 3 + 3]) / 2 * s, (p[i * 3 + 1] + p[i * 3 + 4]) / 2 * s);
+      ctx.lineTo(p[(n - 1) * 3] * s, p[(n - 1) * 3 + 1] * s);
+    }
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+/* small previews on the note cards: the handwriting, cropped to where it is */
+function drawThumbs() {
+  document.querySelectorAll('canvas.nthumb').forEach(cv => {
+    const n = db.notes[cv.dataset.ink]; if (!hasInk(n)) return;
+    const list = inkStrokes(n.ink);
+    const w = cv.clientWidth, h = cv.clientHeight, dpr = window.devicePixelRatio || 1; if (!w || !h) return;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    const x0 = Math.min(...list.map(s => s.left)), x1 = Math.max(...list.map(s => s.right)), y0 = Math.min(...list.map(s => s.top));
+    const s = Math.min((w - 16) / Math.max(40, x1 - x0), 0.75);
+    const ctx = cv.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, (8 - x0 * s) * dpr, (8 - y0 * s) * dpr);
+    drawInk(ctx, list, s, y0 * s - 10, y0 * s + h);
+  });
+}
+/* notes the tablet's pen page saved come back through the Android app */
+window.__zeroInkPull = () => {
+  if (!NATIVE || !window.ZeroNative || !ZeroNative.takeInk) return false;
+  let arr; try { arr = JSON.parse(ZeroNative.takeInk() || '[]'); } catch { return false; }
+  if (!arr.length) return false;
+  let changed = false;
+  for (const x of arr) {
+    if (!x || !x.id) continue;
+    const cur = db.notes[x.id];
+    if (cur && (x.updatedAt || 0) < (cur.updatedAt || 0)) continue;
+    if (x.deleted) { if (cur && !cur.deleted) { cur.deleted = true; cur.updatedAt = x.updatedAt; changed = true; } continue; }
+    db.notes[x.id] = { ...(cur || { id: x.id, createdAt: x.createdAt || new Date().toISOString() }), title: x.title || '', text: x.text || '', ink: x.ink || null, updatedAt: x.updatedAt, deleted: false };
+    changed = true;
+  }
+  if (changed) { save(); renderMain(); if (ui.sheet && ui.sheet.type === 'note') renderSheet(); }
+  for (const x of arr) if (x && x.id) { try { ZeroNative.ackInk(x.id, String(x.updatedAt || 0)); } catch { } }
+  return changed;
+};
+function inkSheet(n) {
+  const zoom = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5M8.5 11h5${ui.inkZoom ? '' : 'M11 8.5v5'}"/></svg>`;
+  return `<div class="writer inkw" role="dialog" aria-label="Note">
+    <div class="bar"><button class="ib" data-act="close-sheet" aria-label="Back">${I.l}</button><span class="meta" id="n-meta">${noteMeta(n)} · handwriting</span><span style="display:flex;gap:4px"><button class="ib" data-act="ink-zoom" aria-label="${ui.inkZoom ? 'Fit to screen' : 'Zoom in'}">${zoom}</button><button class="ib" data-act="del-note" aria-label="Delete note">${I.trash}</button></span></div>
+    <div class="body" id="n-body"><div class="page" id="ink-page">
+      <textarea id="n-title" class="wt" rows="1" dir="auto" placeholder="Title" aria-label="Title">${esc(n.title || '')}</textarea>
+      <div class="rule"></div>
+      <textarea id="n-text" class="wb" dir="auto" placeholder="" aria-label="Note">${esc(n.text || '')}</textarea>
+      <canvas id="ink-cv" aria-hidden="true"></canvas>
+    </div></div></div>`;
+}
+function layoutInk() {
+  const pg = $('#ink-page'), body = $('#n-body'); const n = ui.sheet && db.notes[ui.sheet.id];
+  if (!pg || !body || !n) return;
+  const avail = body.clientWidth;
+  const w = ui.inkZoom ? Math.max(avail, 820) : Math.min(avail, 900);
+  pg.style.width = w + 'px'; pg.style.setProperty('--u', (w / INK_PAGE) + 'px');
+  growNote();
+  const tx = $('#n-text', pg); const textH = tx ? tx.offsetTop + tx.offsetHeight : 0;
+  pg.style.minHeight = Math.ceil(Math.max(textH, inkBottom(n.ink) * w / INK_PAGE) + 160) + 'px';
+  drawInkView();
+}
+let inkRaf = 0;
+function drawInkView() {
+  const cv = $('#ink-cv'), pg = $('#ink-page'), body = $('#n-body'); const n = ui.sheet && db.notes[ui.sheet.id];
+  if (!cv || !pg || !body || !n) return;
+  const w = pg.clientWidth, vh = body.clientHeight, dpr = window.devicePixelRatio || 1, s = w / INK_PAGE;
+  const top = Math.max(0, Math.min(body.scrollTop - pg.offsetTop, pg.offsetHeight - vh));
+  cv.style.top = top + 'px'; cv.style.width = w + 'px'; cv.style.height = vh + 'px';
+  cv.width = Math.round(w * dpr); cv.height = Math.round(vh * dpr);
+  const ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, -top * dpr);
+  drawInk(ctx, inkStrokes(n.ink), s, top, top + vh);
+}
+function bindInk() {
+  const body = $('#n-body'); if (!body || !$('#ink-page')) return;
+  body.addEventListener('scroll', () => { cancelAnimationFrame(inkRaf); inkRaf = requestAnimationFrame(drawInkView); }, { passive: true });
+  layoutInk();
+}
+window.addEventListener('resize', () => { if ($('#ink-page')) layoutInk(); });
 function notesView() {
   const list = notes();
   const q = ui.nq.trim().toLowerCase();
@@ -939,7 +1072,7 @@ function notesView() {
   if (list.length > 5) html += `<input id="note-q" class="tin" dir="auto" type="search" placeholder="Search notes" value="${esc(ui.nq)}" style="margin-bottom:12px">`;
   html += `<div class="ngrid">${shown.map((n, i) => {
     const { t, p } = noteTitle(n);
-    return `<button class="ncard ${i === 0 && !q ? 'first' : ''}" data-act="open-note" data-id="${esc(n.id)}"><span class="t" dir="auto">${esc(t)}</span>${p ? `<span class="p" dir="auto">${esc(p.slice(0, 280))}</span>` : ''}<span class="d">${esc(new Date(n.updatedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</span></button>`;
+    return `<button class="ncard ${i === 0 && !q ? 'first' : ''}" data-act="open-note" data-id="${esc(n.id)}"><span class="t" dir="auto">${esc(t)}</span>${p ? `<span class="p" dir="auto">${esc(p.slice(0, 280))}</span>` : ''}${hasInk(n) ? `<canvas class="nthumb" data-ink="${esc(n.id)}" aria-hidden="true"></canvas>` : ''}<span class="d">${esc(new Date(n.updatedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</span></button>`;
   }).join('')}</div>`;
   if (!list.length) html += '<div class="empty" style="padding-top:20px">No notes yet. Tap “New note” to start writing.</div>';
   else if (!shown.length) html += '<div class="empty">No notes match.</div>';
@@ -1290,7 +1423,7 @@ function cleanupNote() {
   const s = ui.sheet; if (!s || s.type !== 'note') return;
   const n = db.notes[s.id]; if (!n) return;
   clearTimeout(typeT);
-  if (!(n.text || '').trim() && !(n.title || '').trim()) { n.deleted = true; n.updatedAt = now(); }
+  if (!(n.text || '').trim() && !(n.title || '').trim() && !hasInk(n)) { n.deleted = true; n.updatedAt = now(); }
   save();
 }
 function openEventSheet(ev, pre = {}) {
@@ -1319,7 +1452,7 @@ function renderSheet() {
   else if (s.type === 'note') { const n = db.notes[s.id]; if (!n || n.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = noteSheet(n); }
   else if (s.type === 'image') inner = imageSheet(s);
   const sc = $('.sheet', root); const top = sc ? sc.scrollTop : 0;
-  if (s.type === 'note') { const nb = $('#n-body', root); const nt = nb ? nb.scrollTop : 0; root.innerHTML = inner; growNote(); const b2 = $('#n-body', root); if (b2) b2.scrollTop = nt; return; }
+  if (s.type === 'note') { const nb = $('#n-body', root); const nt = nb ? nb.scrollTop : 0; root.innerHTML = inner; growNote(); bindInk(); const b2 = $('#n-body', root); if (b2) { b2.scrollTop = nt; drawInkView(); } return; }
   root.innerHTML = `<div class="sheet-bg" data-act="close-sheet"></div><div class="sheet" role="dialog" aria-modal="true" aria-label="${s.type}">${inner}</div>`;
   const nsc = $('.sheet', root); if (nsc) nsc.scrollTop = top;
   autoGrow(); hydrateImgs(root);
@@ -1363,6 +1496,7 @@ function noteMeta(n) {
 }
 /* a full page for writing: title on top, then as much text as you like */
 function noteSheet(n) {
+  if (hasInk(n)) return inkSheet(n);
   return `<div class="writer" role="dialog" aria-label="Note">
     <div class="bar"><button class="ib" data-act="close-sheet" aria-label="Back">${I.l}</button><span class="meta" id="n-meta">${noteMeta(n)}</span><button class="ib" data-act="del-note" aria-label="Delete note">${I.trash}</button></div>
     <div class="body" id="n-body">
@@ -1427,6 +1561,7 @@ function go(view) { ui.view = view; LS.set('view', view); if (view !== 'project'
 function closeSheetQuiet() { if (ui.sheet) { if (history.state && history.state.zsheet) history.back(); ui.sheet = null; renderSheet(); } }
 function openProject(id) { if (!db.projects[id]) return; ui.projectId = id; ui.view = 'project'; LS.set('view', 'project'); LS.set('projectId', id); renderMain(); window.scrollTo(0, 0); }
 function openNote(id) {
+  if (INK_TABLET) { const n = db.notes[id]; if (n) { try { ZeroNative.openInk(JSON.stringify(n)); return; } catch { } } }
   openSheet({ type: 'note', id });
   setTimeout(() => { const n = db.notes[id]; const i = n && !(n.title || n.text) ? $('#n-title') : null; if (i) i.focus(); }, 80);
 }
@@ -1444,7 +1579,8 @@ document.addEventListener('click', e => {
     case 'tfilter': ui.tFilter = el.dataset.v; renderMain(); break;
     case 'new-note': { const n = newNote(''); openNote(n.id); break; }
     case 'open-note': if (db.notes[el.dataset.id]) openNote(el.dataset.id); break;
-    case 'del-note': { const s = ui.sheet; const n = s && db.notes[s.id]; if (n && ((!(n.text || '').trim() && !(n.title || '').trim()) || confirm('Delete this note?'))) { n.deleted = true; n.text = n.text || ''; n.updatedAt = now(); save(); closeSheet(); toast('Note deleted'); } break; }
+    case 'ink-zoom': ui.inkZoom = !ui.inkZoom; renderSheet(); break;
+    case 'del-note': { const s = ui.sheet; const n = s && db.notes[s.id]; if (n && ((!(n.text || '').trim() && !(n.title || '').trim() && !hasInk(n)) || confirm('Delete this note?'))) { n.deleted = true; n.text = n.text || ''; n.updatedAt = now(); save(); closeSheet(); toast('Note deleted'); } break; }
     case 'img-open': if (t) { ui.sheet = { type: 'image', img: el.dataset.img, taskId: t.id, prev: ui.sheet }; renderSheet(); } break;
     case 'img-del': { const s = ui.sheet; const x = s && db.tasks[s.taskId]; if (x && confirm('Remove this image?')) { removeImage(x, s.img); ui.sheet = s.prev; renderSheet(); renderMain(); } break; }
     case 'pick': ui.sel = el.dataset.d; if (ui.sel.slice(0, 7) !== ui.month) setMonth(ui.sel.slice(0, 7)); else renderMain(); break;
@@ -1553,6 +1689,7 @@ document.addEventListener('input', e => {
     const n = db.notes[ui.sheet.id];
     if (n) { if (el.id === 'n-title') n.title = el.value; else n.text = el.value; n.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(save, 500); }
     el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px';
+    if ($('#ink-page')) layoutInk();
     const m = document.getElementById('n-meta'); if (m && n) m.innerHTML = noteMeta(n);
     return;
   }
@@ -1617,6 +1754,7 @@ window.addEventListener('offline', () => renderMain());
 let lastWake = 0;
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') { if (LS.get('dirty', false)) sync(); return; }
+  window.__zeroInkPull();
   if (now() - lastWake < 30e3) return; lastWake = now();
   const t = today(); if (ui.sel < t && ui.sel.slice(0, 7) === t.slice(0, 7)) ui.sel = t;
   renderMain();
@@ -1650,6 +1788,7 @@ function handleLaunch() {
 }
 
 renderMain(); renderSheet();
+window.__zeroInkPull();
 handleLaunch();
 if (LS.get('signedIn', false)) { initAuth(); if (authed()) afterAuth(); else if (NATIVE) nativeAuth(false); }
 else initAuth();

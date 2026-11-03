@@ -380,3 +380,12 @@ a{color:var(--sand2)}
   .main{padding-bottom:calc(172px + var(--safe-b))}
   #toast{bottom:calc(160px + var(--safe-b))}
 }
+
+/* ---------- handwriting (pen notes from the tablet) ---------- */
+.ncard .nthumb{display:block;width:100%;height:88px;border-radius:12px;background:var(--bg)}
+.inkw .body{max-width:none;width:100%;padding:0;overflow:auto}
+.inkw .page{position:relative;margin:0 auto;overflow:hidden;--u:0.76px}
+.inkw .wt{font-size:calc(var(--u)*34);line-height:1.35;padding:calc(var(--u)*22) calc(var(--u)*30) calc(var(--u)*13)}
+.inkw .rule{width:calc(var(--u)*58);height:max(2px,calc(var(--u)*4));margin:0 0 calc(var(--u)*21) calc(var(--u)*30)}
+.inkw .wb{min-height:0;font-size:calc(var(--u)*24);line-height:1.85;padding:0 calc(var(--u)*30) calc(var(--u)*40)}
+.inkw canvas{position:absolute;left:0;top:0;pointer-events:none}
