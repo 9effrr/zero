@@ -3,6 +3,8 @@
     <string name="app_name">Ctrl Z</string>
     <string name="widget_name">Zerodocs control</string>
     <string name="widget_desc">Today\'s events and urgent tasks</string>
+    <string name="cal_widget_name">Ctrl Z · Calendar</string>
+    <string name="cal_widget_desc">Month calendar with the day\'s tasks below</string>
     <string name="sc_add">New task</string>
     <string name="sc_note">New note</string>
     <string name="sc_today">Today</string>
