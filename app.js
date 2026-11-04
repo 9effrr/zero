@@ -787,9 +787,9 @@ function projStats(p) {
   return { total: ts.length, done, open: ts.length - done, overdue, pct: ts.length ? Math.round(done / ts.length * 100) : 0 };
 }
 function pcardHTML(p) {
-  const s = projStats(p);
-  return `<button class="card pcard" data-act="open-project" data-id="${esc(p.id)}">
-    <span style="display:flex;justify-content:space-between;gap:10px;align-items:baseline"><span class="nm" dir="auto">${esc(p.name)}</span><span class="mut" style="font-size:12px;white-space:nowrap">${p.deadline ? 'Due ' + esc(shortDay(p.deadline)) : ''}</span></span>
+  const s = projStats(p); const a = areaOf(p.areaId);
+  return `<button class="card pcard ${p.done ? 'pdone' : ''}" data-act="open-project" data-id="${esc(p.id)}" style="${a ? '--ac:' + a.color : ''}">
+    <span style="display:flex;justify-content:space-between;gap:10px;align-items:baseline"><span class="nm" dir="auto">${p.done ? `<span class="pdk">${I.check}</span>` : ''}${esc(p.name)}</span><span class="mut" style="font-size:12px;white-space:nowrap">${p.done ? 'Completed ' + esc(shortDay(isoDay(p.doneAt || new Date().toISOString()))) : p.deadline ? 'Due ' + esc(shortDay(p.deadline)) : ''}</span></span>
     <span class="prog"><i style="width:${s.pct}%"></i></span>
     <span class="mut" style="font-size:12px">${s.done} of ${s.total} done${s.overdue ? ` · <span class="or">${s.overdue} overdue</span>` : ''}${(p.stages || []).length ? ' · ' + p.stages.length + ' stages' : ''}</span></button>`;
 }
@@ -822,7 +822,7 @@ function sideHTML() {
   </nav>`;
 }
 function qaPlaceholder() {
-  if (ui.view === 'notes') return 'Write a quick note…';
+  if (ui.view === 'notes' || ui.view === 'home') return 'Write a quick note…';
   const c = qaCtx();
   if (c.projectId) return `Add to ${projName(c.projectId)}…`;
   if (c.areaId) return `Add to ${areaOf(c.areaId).name}… e.g. متابعة العقد غداً`;
@@ -832,7 +832,7 @@ function qaHTML(id) {
   return `<form class="qa" data-form="qa" autocomplete="off"><label class="sr" for="${id}">Quick add</label>
     <input id="${id}" data-enter="qa" dir="auto" enterkeyhint="done" placeholder="${esc(qaPlaceholder())}" value="${esc(ui.qa)}">
     <button class="go" type="submit" aria-label="Add">${I.plus}</button></form>
-    <div class="qa-prev" id="${id}-prev">${ui.view === 'notes' ? '' : qaPreview(ui.qa)}</div>`;
+    <div class="qa-prev" id="${id}-prev">${ui.view === 'notes' || ui.view === 'home' ? '' : qaPreview(ui.qa)}</div>`;
 }
 function bottomHTML() {
   const cur = curTab();
@@ -851,7 +851,7 @@ function renderMain() {
   const a = document.activeElement;
   const keep = a && a.id && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && !a.closest('.sheet, .writer') ? { id: a.id, v: a.value, s: a.selectionStart, e: a.selectionEnd } : null;
   const ot = $('#tabs'); if (ot) tabsScroll = ot.scrollLeft;
-  app.innerHTML = `<div class="shell">${sideHTML()}<main class="main" id="main"><div class="mob-top"><img src="logo.png" alt="Zerodocs control" width="52" height="32" class="mob-logo"><button class="ib" data-act="settings" aria-label="Settings">${I.gear}</button></div>${bannerHTML()}<div class="qa-top">${qaHTML('qa-d')}</div>${viewHTML()}</main>${bottomHTML()}</div>`;
+  app.innerHTML = `<div class="shell">${sideHTML()}<main class="main" id="main"><div class="mob-top"><img src="logo.png" alt="Zerodocs control" width="52" height="32" class="mob-logo"><button class="ib" data-act="settings" aria-label="Settings">${I.gear}</button></div>${bannerHTML()}${ui.view === 'home' ? '' : `<div class="qa-top">${qaHTML('qa-d')}</div>`}${viewHTML()}</main>${bottomHTML()}</div>`;
   const tb = $('#tabs');
   if (tb) {
     tb.scrollLeft = tabsScroll;
@@ -882,7 +882,7 @@ function viewHTML() {
    period and the old periods are kept, so it works as a habit or money tracker. */
 const LIST_AREAS = ['personal'];
 const REPS = [['', 'Once'], ['daily', 'Daily'], ['weekly', 'Weekly'], ['monthly', 'Monthly']];
-const lists = areaId => Object.values(db.lists || {}).filter(l => !l.deleted && (!areaId || l.areaId === areaId)).sort((a, b) => (a.createdAt || '') < (b.createdAt || '') ? -1 : 1);
+const lists = (areaId, kind) => Object.values(db.lists || {}).filter(l => !l.deleted && (!areaId || l.areaId === areaId) && (!kind || (kind === 'habit' ? l.kind === 'habit' : l.kind !== 'habit'))).sort((a, b) => (a.createdAt || '') < (b.createdAt || '') ? -1 : 1);
 function periodKey(rep, d = today()) {
   if (rep === 'daily') return d;
   if (rep === 'weekly') return addD(d, -pd(d).getDay());
@@ -898,8 +898,8 @@ function periodLabel(rep, k) {
   return '';
 }
 const listChecks = (l, k) => (l.checks && l.checks[k]) || [];
-function newList(areaId) {
-  const l = { id: uid(), name: '', areaId, repeat: '', items: [], checks: {}, createdAt: new Date().toISOString(), updatedAt: now(), deleted: false };
+function newList(areaId, kind = 'list') {
+  const l = { id: uid(), name: '', areaId, kind, repeat: kind === 'habit' ? 'daily' : '', items: [], checks: {}, vals: {}, createdAt: new Date().toISOString(), updatedAt: now(), deleted: false };
   db.lists[l.id] = l; save(); return l;
 }
 function updList(l, ch) { Object.assign(l, ch, { updatedAt: now() }); save(); }
@@ -924,20 +924,78 @@ function listCardHTML(l) {
   </div>`;
 }
 function listsHTML(areaId) {
-  const ls = lists(areaId);
+  const ls = lists(areaId, 'list');
   return sec('To-do lists', `<div class="plist">${ls.map(listCardHTML).join('')}</div>
     ${ls.length ? '' : '<p class="mut" style="font-size:12px;margin:0 2px">A checklist. Make it repeat daily, weekly or monthly to track habits, spending or anything that comes round again.</p>'}
     <button class="dash" style="width:100%;margin-top:10px" data-act="new-list" data-area="${areaId}">+ New to-do list</button>`, { right: `<span class="mut">${ls.length}</span>` });
 }
 function listSheet(l) {
   return `
-  <div class="sheet-top"><button class="ib" data-act="close-sheet" aria-label="Close">${I.l}</button><span class="crumb">To-do list</span><button class="ib" data-act="list-del" data-id="${esc(l.id)}" aria-label="Delete list">${I.trash}</button></div>
-  <textarea id="l-name" class="title-in" rows="1" dir="auto" placeholder="List name, e.g. عادات يومية">${esc(l.name || '')}</textarea>
-  ${sec('Repeats', `<div class="seg" role="group" aria-label="Repeats">${REPS.map(([v, n]) => `<button class="${(l.repeat || '') === v ? 'on' : ''}" data-act="list-rep" data-id="${esc(l.id)}" data-v="${v}" aria-pressed="${(l.repeat || '') === v}">${n}</button>`).join('')}</div>
+  <div class="sheet-top"><button class="ib" data-act="close-sheet" aria-label="Close">${I.l}</button><span class="crumb">${l.kind === 'habit' ? 'Habit tracker' : 'To-do list'}</span><button class="ib" data-act="list-del" data-id="${esc(l.id)}" aria-label="Delete list">${I.trash}</button></div>
+  <textarea id="l-name" class="title-in" rows="1" dir="auto" placeholder="${l.kind === 'habit' ? 'Tracker name, e.g. صحتي' : 'List name, e.g. عادات يومية'}">${esc(l.name || '')}</textarea>
+  ${sec('Repeats', `<div class="seg" role="group" aria-label="Repeats">${REPS.filter(r => l.kind !== 'habit' || r[0]).map(([v, n]) => `<button class="${(l.repeat || '') === v ? 'on' : ''}" data-act="list-rep" data-id="${esc(l.id)}" data-v="${v}" aria-pressed="${(l.repeat || '') === v}">${n}</button>`).join('')}</div>
     <p class="mut" style="font-size:12px;margin:8px 2px 0;line-height:1.55">${l.repeat ? `Ticks start fresh ${({ daily: 'every day', weekly: 'every Sunday', monthly: 'on the 1st of each month' })[l.repeat]}. Past ${({ daily: 'days', weekly: 'weeks', monthly: 'months' })[l.repeat]} are kept as your history.` : 'A one-off checklist: ticks stay until you untick them.'}</p>`)}
-  ${sec('Items', `${l.items.map((it, i) => `<div class="litem"><span class="lt" dir="auto">${esc(it.title)}</span><button class="ib" data-act="list-up" data-id="${esc(l.id)}" data-i="${i}" aria-label="Move up" ${i ? '' : 'disabled style="opacity:.3"'}>${I.l}</button><button class="ib" data-act="list-item-del" data-id="${esc(l.id)}" data-item="${esc(it.id)}" aria-label="Remove ${esc(it.title)}">${I.x}</button></div>`).join('') || '<div class="empty" style="padding:6px 0">No items yet.</div>'}
-    ${addForm('list-item', 'Add an item', { id: 'ls-new', data: `data-lid="${esc(l.id)}"` })}`)}`;
+  ${l.kind === 'habit' ? '<p class="mut" style="font-size:12px;margin:14px 2px 0;line-height:1.55">Each item is either a tick (did it or not) or a number you type in, like weight, steps or money. Tap ✓ / 123 to switch.</p>' : ''}
+  ${sec('Items', `${l.items.map((it, i) => `<div class="litem"><span class="lt" dir="auto">${esc(it.title)}</span>${l.kind === 'habit' ? `${it.type === 'num' ? `<input class="hunit" id="hu-${esc(it.id)}" data-lid="${esc(l.id)}" data-item="${esc(it.id)}" dir="auto" placeholder="unit" value="${esc(it.unit || '')}" aria-label="Unit for ${esc(it.title)}">` : ''}<button class="htype" data-act="habit-type" data-id="${esc(l.id)}" data-item="${esc(it.id)}" aria-label="Switch between tick and number">${it.type === 'num' ? '123' : '✓'}</button>` : ''}<button class="ib" data-act="list-up" data-id="${esc(l.id)}" data-i="${i}" aria-label="Move up" ${i ? '' : 'disabled style="opacity:.3"'}>${I.l}</button><button class="ib" data-act="list-item-del" data-id="${esc(l.id)}" data-item="${esc(it.id)}" aria-label="Remove ${esc(it.title)}">${I.x}</button></div>`).join('') || '<div class="empty" style="padding:6px 0">No items yet.</div>'}
+    ${addForm('list-item', l.kind === 'habit' ? 'Add something to track, e.g. الوزن' : 'Add an item', { id: 'ls-new', data: `data-lid="${esc(l.id)}"` })}`)}`;
 }
+/* habit trackers: ticks and numbers per day (or week / month), with a clean log underneath */
+const hVals = (l, k) => (l.vals && l.vals[k]) || {};
+const fmtNum = v => (Math.round(v * 100) / 100).toLocaleString('en-GB', { maximumFractionDigits: 2 });
+function hPeriods(l, k, n) { const out = []; let x = k; for (let i = 0; i < n; i++) { out.push(x); x = prevPeriod(l.repeat || 'daily', x); } return out; }
+function sparkSVG(pts, w = 120, h = 30) {
+  if (pts.length < 2) return '';
+  const mn = Math.min(...pts), mx = Math.max(...pts), sp = mx - mn || 1;
+  const xy = pts.map((v, i) => [(i / (pts.length - 1)) * (w - 4) + 2, h - 3 - ((v - mn) / sp) * (h - 6)]);
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><polyline fill="none" stroke="var(--sand)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="${xy.map(p => p.map(n => n.toFixed(1)).join(',')).join(' ')}"/><circle cx="${xy[xy.length - 1][0].toFixed(1)}" cy="${xy[xy.length - 1][1].toFixed(1)}" r="3" fill="var(--sand2)"/></svg>`;
+}
+function habitCardHTML(l) {
+  const rep = l.repeat || 'daily', cur = periodKey(rep);
+  const k = (ui.hDay && ui.hDay[l.id]) || cur;
+  const v = hVals(l, k), n = l.items.length;
+  const filled = l.items.filter(it => v[it.id] !== undefined && v[it.id] !== false && v[it.id] !== '').length;
+  const lastNum = it => { for (const p of hPeriods(l, prevPeriod(rep, k), 60)) { const x = hVals(l, p)[it.id]; if (typeof x === 'number') return x; } return null; };
+  const rows = l.items.map(it => {
+    if (it.type === 'num') {
+      const ln = lastNum(it);
+      return `<div class="litem hrow"><span class="lt" dir="auto">${esc(it.title)}</span><input class="hnum" id="hn-${esc(l.id)}-${esc(it.id)}" data-lid="${esc(l.id)}" data-item="${esc(it.id)}" data-k="${esc(k)}" inputmode="decimal" enterkeyhint="done" value="${typeof v[it.id] === 'number' ? String(Math.round(v[it.id] * 100) / 100) : ''}" placeholder="${ln !== null ? fmtNum(ln) : '—'}" aria-label="${esc(it.title)}"><span class="hu">${esc(it.unit || '')}</span></div>`;
+    }
+    const on = !!v[it.id];
+    return `<div class="litem hrow ${on ? 'isdone' : ''}"><span class="lt" dir="auto">${esc(it.title)}</span><button class="chk ${on ? 'done' : ''}" data-act="habit-tick" data-id="${esc(l.id)}" data-item="${esc(it.id)}" data-k="${esc(k)}" aria-pressed="${on}" aria-label="${esc(it.title)}">${on ? I.check : ''}</button></div>`;
+  }).join('');
+  const show = (ui.hMore && ui.hMore[l.id]) ? 30 : 7;
+  const per = hPeriods(l, cur, show);
+  const short = p => rep === 'daily' ? pd(p).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : periodLabel(rep, p);
+  const table = n ? `<div class="htab-wrap"><table class="htab"><thead><tr><th></th>${l.items.map(it => `<th dir="auto">${esc(it.title)}${it.unit ? ` <small>${esc(it.unit)}</small>` : ''}</th>`).join('')}</tr></thead>
+    <tbody>${per.map(p => { const pv = hVals(l, p); return `<tr class="${p === k ? 'sel' : ''}" data-act="habit-goto" data-id="${esc(l.id)}" data-k="${esc(p)}"><td>${esc(short(p))}</td>${l.items.map(it => { const x = pv[it.id]; return `<td>${it.type === 'num' ? (typeof x === 'number' ? `<b>${fmtNum(x)}</b>` : '<span class="nil">·</span>') : (x ? `<span class="yes">${I.check}</span>` : '<span class="nil">·</span>')}</td>`; }).join('')}</tr>`; }).join('')}</tbody></table></div>
+    <button class="pill" style="margin:8px 0 4px" data-act="habit-more" data-id="${esc(l.id)}">${show === 7 ? 'Show 30' : 'Show 7'}</button>` : '';
+  /* numbers over time */
+  const trends = l.items.filter(it => it.type === 'num').map(it => {
+    const pts = hPeriods(l, cur, 30).reverse().map(p => hVals(l, p)[it.id]).filter(x => typeof x === 'number');
+    if (!pts.length) return '';
+    const last = pts[pts.length - 1], prev = pts.length > 1 ? pts[pts.length - 2] : null, d = prev === null ? null : last - prev;
+    return `<div class="htrend"><span class="lt" dir="auto">${esc(it.title)}</span>${sparkSVG(pts)}<span class="hv"><b>${fmtNum(last)}</b>${esc(it.unit ? ' ' + it.unit : '')}${d !== null ? ` <em class="${d > 0 ? 'up' : d < 0 ? 'down' : ''}">${d > 0 ? '+' : ''}${fmtNum(d)}</em>` : ''}<small>${pts.length > 1 ? `${fmtNum(Math.min(...pts))}–${fmtNum(Math.max(...pts))}` : ''}</small></span></div>`;
+  }).join('');
+  /* tick streaks */
+  const unit = c => rep === 'daily' ? (c === 1 ? 'day' : 'days') : rep === 'weekly' ? (c === 1 ? 'week' : 'weeks') : (c === 1 ? 'month' : 'months');
+  const streaks = l.items.filter(it => it.type !== 'num').map(it => { let c = 0; for (const p of hPeriods(l, hVals(l, cur)[it.id] ? cur : prevPeriod(rep, cur), 400)) { if (hVals(l, p)[it.id]) c++; else break; } return c ? `<span class="hstreak" dir="auto">${esc(it.title)} · <b>${c}</b> ${unit(c)} in a row</span>` : ''; }).join('');
+  return `<div class="card hcard">
+    <div class="lh"><button class="lname" data-act="list-edit" data-id="${esc(l.id)}" dir="auto">${esc(l.name || 'Untitled tracker')}</button><span class="lmeta">${filled}/${n}</span><button class="ib" data-act="list-edit" data-id="${esc(l.id)}" aria-label="Edit tracker">${I.gear}</button></div>
+    <div class="hnav"><button class="ib" data-act="habit-day" data-id="${esc(l.id)}" data-dir="-1" aria-label="Previous">${I.l}</button><span>${k === cur ? ({ daily: 'Today', weekly: 'This week', monthly: 'This month' })[rep] : esc(periodLabel(rep, k))}</span><button class="ib" data-act="habit-day" data-id="${esc(l.id)}" data-dir="1" aria-label="Next" ${k === cur ? 'disabled style="opacity:.3"' : ''}>${I.r}</button></div>
+    ${rows || '<div class="empty" style="padding:6px 0">Add what you want to track: weight, water, reading…</div>'}
+    ${addForm('list-item', 'Add something to track', { id: 'hi-' + l.id, data: `data-lid="${esc(l.id)}"` })}
+    ${streaks ? `<div class="hstreaks">${streaks}</div>` : ''}
+    ${trends}
+    ${table}
+  </div>`;
+}
+function habitsHTML(areaId) {
+  const ls = lists(areaId, 'habit');
+  return sec('Habit trackers', `<div class="plist">${ls.map(habitCardHTML).join('')}</div>
+    ${ls.length ? '' : '<p class="mut" style="font-size:12px;margin:0 2px">Track things every day: tick the ones you just do, type a number for the ones you measure (weight, steps, money). Everything is kept as a clean log.</p>'}
+    <button class="dash" style="width:100%;margin-top:10px" data-act="new-list" data-area="${areaId}" data-kind="habit">+ New habit tracker</button>`, { right: `<span class="mut">${ls.length}</span>` });
+}
+
 
 /* ---------------- views ---------------- */
 function homeView() {
@@ -966,8 +1024,8 @@ function homeView() {
   const selList = sel.ev.map(evHTML).join('') + sel.tk.map(x => taskHTML(x.t, { hideDue: true, ghost: x.ghost, log: x.log })).join('');
   const urgent = tasks().filter(isUrgent).sort(byDue);
   const notThisMonth = m !== td.slice(0, 7) || ui.sel !== td;
-  return `${pulseHTML()}<div class="home">
-    <div class="left">
+  return `<div class="hero"><img src="header.png" alt="Ctrl Z Station" decoding="async"></div>${pulseHTML()}<div class="home">
+    <div class="left calp">
       <div class="hdr">
         <h1>${first.toLocaleDateString('en-GB', { month: 'long' })} <span>${first.getFullYear()}</span></h1>
         <div class="row">
@@ -986,10 +1044,54 @@ function homeView() {
         ${selList || '<div class="empty">Nothing scheduled</div>'}
         <div class="add-row"><button class="dash" data-act="new-event" data-d="${ui.sel}">+ Event</button><button class="dash" data-act="new-task" data-d="${ui.sel}">+ Task</button></div>
       </section>
-      ${urgent.length ? sec('Urgent', urgent.map(t => taskHTML(t)).join(''), { cls: 'or' }) : ''}
-      ${allTasksHTML()}
     </div>
-  </div>`;
+  </div>
+  ${homeStatsHTML()}
+  ${homeTasksHTML()}
+  <div class="desk note-add">${sec('Quick note', qaHTML('qa-h'))}</div>`;
+}
+/* review numbers for everything, whatever the Review page is filtered to */
+function globalReview(from, to) {
+  const sa = ui.rArea, sp = ui.rProj; ui.rArea = ''; ui.rProj = '';
+  try { return reviewData(from, to); } finally { ui.rArea = sa; ui.rProj = sp; }
+}
+function ringSVG(pct, size = 96, w = 10) {
+  const r = (size - w) / 2, c = 2 * Math.PI * r, p = Math.max(0, Math.min(1, pct));
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true" class="ring">
+    <defs><linearGradient id="rg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#DDBF9F"/><stop offset="1" stop-color="#C29B78"/></linearGradient></defs>
+    <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="var(--s2)" stroke-width="${w}"/>
+    ${p > 0 ? `<circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="url(#rg)" stroke-width="${w}" stroke-linecap="round" stroke-dasharray="${(c * p).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 ${size / 2} ${size / 2})"/>` : ''}
+  </svg>`;
+}
+function homeStatsHTML() {
+  const td = today();
+  const r = globalReview(addD(td, -6), td);
+  const open = tasks().filter(t => !t.done), overdue = open.filter(isOverdue);
+  const per = {}; r.done.forEach(l => { const d = isoDay(l.at); per[d] = (per[d] || 0) + 1; });
+  const doneToday = per[td] || 0;
+  const left = open.filter(t => t.due && t.due <= td).length;
+  const goal = doneToday + left;
+  const days = []; for (let i = 6; i >= 0; i--) days.push(addD(td, -i));
+  const max = Math.max(1, ...days.map(d => per[d] || 0));
+  const card = (k, v, sub, cls) => `<button class="card hst ${cls}" data-act="nav" data-v="review"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${sub}</span></button>`;
+  return `<section class="sec"><div class="sec-h"><h2>Your tasks</h2><button class="pill" data-act="nav" data-v="review">Review</button></div><div class="hstats">
+    <div class="card hring">
+      <div class="rwrap">${ringSVG(goal ? doneToday / goal : 0)}<div class="rnum"><b>${doneToday}</b><span>${goal ? 'of ' + goal : 'done'}</span></div></div>
+      <div class="rinfo"><span class="k">Done today</span><span class="s">${goal ? (left ? `${left} still to do today` : 'Everything for today is done') : 'Nothing due today'}</span>
+        <div class="wk" aria-label="Done per day, last 7 days">${days.map(d => `<span title="${esc(fmtDay(d))}: ${per[d] || 0}"><i style="height:${Math.max(6, Math.round((per[d] || 0) / max * 100))}%" class="${per[d] ? '' : 'z'} ${d === td ? 'now' : ''}"></i><em>${'SMTWTFS'[pd(d).getDay()]}</em></span>`).join('')}</div></div>
+    </div>
+    ${card('Open', open.length, `${open.filter(t => t.due === td).length} due today`, 'c-open')}
+    ${card('Done', r.done.length, 'last 7 days', 'c-done')}
+    ${card('Late', overdue.length, r.late.length ? `${r.late.length} done late this week` : 'overdue now', overdue.length ? 'c-late' : 'c-ok')}
+  </div></section>`;
+}
+function homeTasksHTML() {
+  if (ui.homeAll) return allTasksHTML();
+  const open = tasks().filter(t => !t.done).sort((a, b) => (isUrgent(b) - isUrgent(a)) || byDue(a, b));
+  const few = open.slice(0, 5);
+  return sec('Tasks', `${few.map(t => taskHTML(t)).join('') || '<div class="empty">All clear.</div>'}
+    ${open.length > few.length ? `<button class="dash" style="width:100%;margin-top:8px" data-act="home-all">View more · ${open.length - few.length} more</button>` : ''}`,
+    { right: open.length ? `<button class="pill" data-act="home-all">View more</button>` : '' });
 }
 /* a small at-a-glance strip: every section's open, done (last 14 days) and late tasks */
 function pulseHTML() {
@@ -1156,7 +1258,7 @@ function notesView() {
 }
 function allTasksHTML() {
   const seg = (v, l) => `<button class="${ui.tFilter === v ? 'on' : ''}" data-act="tfilter" data-v="${v}" aria-pressed="${ui.tFilter === v}">${l}</button>`;
-  let html = `<section class="sec alltasks"><div class="sec-h"><h2>All tasks</h2><span class="mut">${tasks().filter(t => !t.done).length} open</span></div>
+  let html = `<section class="sec alltasks"><div class="sec-h"><h2>All tasks · ${tasks().filter(t => !t.done).length}</h2><button class="pill" data-act="home-all">Show less</button></div>
     <div class="seg" role="group" aria-label="Filter" style="margin-bottom:6px">${seg('all', 'By date')}${seg('repeat', 'Repeating')}</div>`;
   if (ui.tFilter === 'repeat') {
     const list = tasks().filter(t => t.repeat).sort(byDue);
@@ -1190,7 +1292,7 @@ function allTasksHTML() {
   return html + '</section>';
 }
 function areaView(a) {
-  const ps = areaProjects(a.id);
+  const allP = areaProjects(a.id), ps = allP.filter(p => !p.done), psDone = allP.filter(p => p.done);
   const all = tasks().filter(t => taskArea(t) === a.id);
   const loose = all.filter(t => !t.projectId || !db.projects[t.projectId] || db.projects[t.projectId].deleted);
   const open = loose.filter(t => !t.done).sort(byDue);
@@ -1198,12 +1300,13 @@ function areaView(a) {
   const openAll = all.filter(t => !t.done);
   const overdue = openAll.filter(isOverdue).length;
   let html = `<div class="narrow">
-    <div class="hdr"><div><div class="sub">${openAll.length} open${overdue ? ` · <span class="or">${overdue} overdue</span>` : ''} · ${ps.length} ${ps.length === 1 ? 'project' : 'projects'}</div><h1 class="area-h">${adot(a)}${esc(a.name)}</h1></div></div>
-    ${LIST_AREAS.includes(a.id) ? `<div class="add3"><button class="pill" data-act="focus" data-f="area-new">+ Task</button><button class="pill" data-act="focus" data-f="proj-new">+ Project</button><button class="pill" data-act="new-list" data-area="${a.id}">+ To-do list</button></div>` : ''}`;
+    <div class="hdr ahdr" style="--ac:${a.color}"><div><div class="sub">${openAll.length} open${overdue ? ` · <span class="or">${overdue} overdue</span>` : ''} · ${ps.length} open ${ps.length === 1 ? 'project' : 'projects'}${psDone.length ? ` · ${psDone.length} completed` : ''}</div><h1 class="area-h">${adot(a)}${esc(a.name)}</h1></div></div>
+    ${LIST_AREAS.includes(a.id) ? `<div class="add3"><button class="pill" data-act="focus" data-f="area-new">+ Task</button><button class="pill" data-act="focus" data-f="proj-new">+ Project</button><button class="pill" data-act="new-list" data-area="${a.id}">+ To-do list</button><button class="pill" data-act="new-list" data-area="${a.id}" data-kind="habit">+ Habit tracker</button></div>` : ''}`;
   html += sec('Projects', `<div class="plist">${ps.map(pcardHTML).join('')}</div>
     <div class="card" style="padding:0 6px 0 14px;margin-top:${ps.length ? 10 : 0}px">${addForm('proj', 'New project in ' + a.name, { id: 'proj-new' })}</div>
-    ${ps.length ? '' : '<p class="mut" style="font-size:12px;margin:8px 2px 0">A project keeps one goal’s tasks together, split into stages if you like.</p>'}`);
-  if (LIST_AREAS.includes(a.id)) html += listsHTML(a.id);
+    ${ps.length || psDone.length ? '' : '<p class="mut" style="font-size:12px;margin:8px 2px 0">A project keeps one goal’s tasks together, split into stages if you like.</p>'}
+    ${psDone.length ? `<div class="sec-h" style="margin-top:14px"><h2>Completed projects · ${psDone.length}</h2><button class="pill" data-act="show-donep">${ui.showDoneP ? 'Hide' : 'Show'}</button></div>${ui.showDoneP ? `<div class="plist">${psDone.map(pcardHTML).join('')}</div>` : ''}` : ''}`);
+  if (LIST_AREAS.includes(a.id)) html += habitsHTML(a.id) + listsHTML(a.id);
   html += sec('Tasks', `${open.map(t => taskHTML(t, { inArea: true })).join('') || '<div class="empty" style="padding:6px 0 4px">No loose tasks.</div>'}
     ${addForm('area-task', 'Add a task to ' + a.name, { id: 'area-new' })}`, { right: `<span class="mut">${open.length}</span>` });
   if (done.length) html += `<section class="sec"><div class="sec-h"><h2>Completed</h2><button class="pill" data-act="show-done">${ui.showDone ? 'Hide' : 'Show ' + done.length}</button></div>${ui.showDone ? done.slice(0, 40).map(t => taskHTML(t, { inArea: true })).join('') : ''}</section>`;
@@ -1227,7 +1330,8 @@ function projectView(p) {
   };
   return `<div class="pview">
     <div class="hdr" style="margin-bottom:8px"><button class="pill" data-act="nav" data-v="${a ? a.id : 'home'}" style="display:inline-flex;align-items:center;gap:6px;padding-left:8px">${I.l}${a ? adot(a) + esc(a.name) : 'Home'}</button><button class="ib" data-act="del-project" aria-label="Delete project">${I.trash}</button></div>
-    <input id="proj-name" class="title-in" style="font-size:28px" dir="auto" value="${esc(p.name)}" aria-label="Project name">
+    <div class="ptitle"><button class="pchk ${p.done ? 'on' : ''}" data-act="proj-done" aria-pressed="${!!p.done}" aria-label="${p.done ? 'Mark project not done' : 'Mark project done'}">${p.done ? I.check : ''}</button><input id="proj-name" class="title-in" style="font-size:28px" dir="auto" value="${esc(p.name)}" aria-label="Project name"></div>
+    ${p.done ? `<div class="pdone-note">${I.check} Completed ${esc(fmtDay(isoDay(p.doneAt || new Date().toISOString())))}</div>` : s.total && s.done === s.total ? `<button class="pdone-cta" data-act="proj-done">All ${s.total} tasks are done. Mark the project as completed</button>` : ''}
     <div style="display:flex;align-items:center;gap:10px;margin:10px 0 12px;flex-wrap:wrap;font-size:13px" class="mut">
       <span>${s.done} of ${s.total} done</span><span>·</span>
       <label style="display:flex;align-items:center;gap:6px">Deadline <input type="date" id="proj-deadline" value="${esc(p.deadline || '')}" style="background:transparent;border:0;color:var(--tx);color-scheme:dark;font-size:13px"></label>
@@ -1336,7 +1440,23 @@ function reviewData(from, to) {
   };
   done.forEach(l => B(keyOf(db.tasks[l.taskId], l)).done++);
   open.forEach(t => { const k = B(keyOf(t)); k.open++; if (isOverdue(t)) k.overdue++; });
-  return { from, to, sc, logs, done, created, postponed, late, avgLate, open, stillOpen, overdue, planned, plannedDone, rep, events, hours: mins / 60, by, scopeProjects };
+  const days = diffD(from, to) + 1, td = today();
+  const perDay = {}; done.forEach(l => { const d = isoDay(l.at); perDay[d] = (perDay[d] || 0) + 1; });
+  const wk = [0, 0, 0, 0, 0, 0, 0]; done.forEach(l => wk[pd(isoDay(l.at)).getDay()]++);
+  const withDue = done.filter(l => l.due), onTime = withDue.filter(l => !(l.late > 0)).length;
+  const lead = done.map(l => { const t = db.tasks[l.taskId]; return t && t.createdAt ? (new Date(l.at) - new Date(t.createdAt)) / 864e5 : null; }).filter(x => x !== null && x >= 0);
+  const buckets = { overdue: overdue.length, today: open.filter(t => t.due === td).length, week: open.filter(t => t.due > td && t.due <= addD(td, 7)).length, later: open.filter(t => t.due > addD(td, 7)).length, none: open.filter(t => !t.due).length };
+  const urgentOpen = open.filter(t => t.urgent).length;
+  const overdueAge = overdue.length ? overdue.reduce((a, t) => a + diffD(t.due, td), 0) / overdue.length : 0;
+  const inRd = iso => !!iso && isoDay(iso) >= from && isoDay(iso) <= to;
+  const projDoneRange = scopeProjects.filter(p => p && p.done && inRd(p.doneAt)).length;
+  const projOpen = scopeProjects.filter(p => p && !p.done).length, projDone = scopeProjects.filter(p => p && p.done).length;
+  const notesN = sc.fA || sc.fP ? null : Object.values(db.notes).filter(n => !n.deleted && inRd(n.createdAt)).length;
+  const doneDays = new Set(Object.values(db.log).filter(l => l.type === 'done' && sc.lOk(l)).map(l => isoDay(l.at)));
+  let streak = 0; { let d = doneDays.has(td) ? td : addD(td, -1); while (doneDays.has(d) && streak < 2000) { streak++; d = addD(d, -1); } }
+  const bestDay = Object.entries(perDay).sort((a, b) => b[1] - a[1])[0] || null;
+  return { from, to, sc, logs, done, created, postponed, late, avgLate, open, stillOpen, overdue, planned, plannedDone, rep, events, hours: mins / 60, by, scopeProjects,
+    days, perDay, wk, withDue, onTime, lead, buckets, urgentOpen, overdueAge, projDoneRange, projOpen, projDone, notesN, streak, activeDays: Object.keys(perDay).length, bestDay };
 }
 function reviewView() {
   const [from, to] = reviewRange();
@@ -1345,7 +1465,7 @@ function reviewView() {
   const sc = r.sc;
   const loading = ui.rEvents === null;
   const seg = (n, l) => `<button class="${ui.rDays === n ? 'on' : ''}" data-act="range" data-n="${n}" aria-pressed="${ui.rDays === n}">${l}</button>`;
-  const stat = (k, v, s, cls = '') => `<div class="card stat"><span class="k">${k}</span><span class="v ${cls}">${v}</span><span class="s">${s}</span></div>`;
+  const stat = (k, v, s, cls = '', cc = '') => `<div class="card stat ${cc}"><span class="k">${k}</span><span class="v ${cls}">${v}</span><span class="s">${s}</span></div>`;
   const projOpts = (sc.fA ? areaProjects(sc.fA) : projects());
   const entries = Object.entries(r.by).sort((a, b) => (b[1].done + b[1].open) - (a[1].done + a[1].open));
   const max = Math.max(1, ...entries.map(([, v]) => v.done + v.open));
@@ -1373,12 +1493,13 @@ function reviewView() {
     <div class="seg" role="group" aria-label="Range">${seg(7, '7 days')}${seg(14, '14 days')}${seg(30, '30 days')}${seg(0, 'Custom')}</div>
     ${ui.rDays === 0 ? `<div class="card" style="margin-top:10px"><div class="field"><label for="r-from">From</label><input type="date" id="r-from" value="${esc(from)}"></div><div class="field"><label for="r-to">To</label><input type="date" id="r-to" value="${esc(to)}"></div></div>` : ''}
     <div class="stats" style="margin-top:16px">
-      ${stat('Tasks done', r.done.length, r.planned ? `${r.plannedDone} of ${r.planned} planned in range` : 'nothing planned in range')}
+      ${stat('Tasks done', r.done.length, r.planned ? `${r.plannedDone} of ${r.planned} planned in range` : 'nothing planned in range', '', 'lite')}
       ${stat('Open now', r.open.length, r.overdue.length ? `<span class="or">${r.overdue.length} overdue</span>` : 'none overdue')}
       ${stat('Done late', r.late.length, r.late.length ? `avg ${r.avgLate.toFixed(1)} days late` : 'none', r.late.length ? 'or' : '')}
       ${stat(sc.fA || sc.fP ? 'Related events' : 'Meetings & events', loading ? '…' : r.events.length, loading ? 'loading calendar' : `${r.hours.toFixed(1)} h in calendar`)}
     </div>
     <p class="mut" style="font-size:13px;margin:12px 2px 0">${r.created.length} created · ${r.postponed.length} postponements · ${r.rep.filter(l => !l.late).length}/${r.rep.length} repeats on time</p>
+    ${reviewNumbersHTML(r)}
     ${focus}
     ${entries.length ? sec(byTitle, `<div class="bars">${entries.map(([n, v]) => `<div><div class="l"><span dir="auto" style="display:flex;align-items:center;gap:7px">${colorFor(n) ? `<i class="adot" style="background:${colorFor(n)}"></i>` : ''}${esc(n)}</span><span class="mut">${v.done} done · ${v.open} open${v.overdue ? ` · <span class="or">${v.overdue} late</span>` : ''}</span></div><div class="t"><i style="width:${Math.round((v.done + v.open) / max * 100)}%;${colorFor(n) ? 'background:' + colorFor(n) : ''}"></i></div></div>`).join('')}</div>`) : ''}
     ${r.overdue.length ? sec('Overdue', r.overdue.slice(0, 12).map(t => taskHTML(t, { inArea: !!sc.fA })).join(''), { cls: 'or' }) : ''}
@@ -1390,6 +1511,48 @@ function reviewView() {
         <button class="btn" data-act="dl-json" ${loading ? 'disabled' : ''} style="font-size:14px;padding:0 8px">JSON</button>
       </div>`)}
   </div>`;
+}
+function reviewNumbersHTML(r) {
+  const pct = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
+  const avg = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
+  const WD = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const busiest = r.done.length ? r.wk.indexOf(Math.max(...r.wk)) : -1;
+  const lead = avg(r.lead);
+  const n = (k, v, s = '', cls = '') => `<div class="ncell ${cls}"><span class="k">${k}</span><span class="v">${v}</span>${s ? `<span class="s">${s}</span>` : ''}</div>`;
+  const cells = [
+    n('Completion rate', pct(r.plannedDone, r.planned), r.planned ? `${r.plannedDone} of ${r.planned} due in range` : 'nothing due in range', 'hi'),
+    n('Done on time', pct(r.onTime, r.withDue.length), r.withDue.length ? `${r.onTime} of ${r.withDue.length} with a date` : 'no dated tasks done'),
+    n('Per day', (r.done.length / r.days).toFixed(1), `${r.done.length} in ${r.days} days`),
+    n('Active days', `${r.activeDays}/${r.days}`, 'days with something done'),
+    n('Best day', r.bestDay ? r.bestDay[1] : '—', r.bestDay ? esc(shortDay(r.bestDay[0])) : ''),
+    n('Streak', r.streak, r.streak === 1 ? 'day in a row' : 'days in a row', r.streak >= 3 ? 'hi' : ''),
+    n('Time to finish', lead === null ? '—' : lead < 1 ? Math.round(lead * 24) + ' h' : lead.toFixed(1) + ' d', 'average, created → done'),
+    n('Created vs done', `${r.created.length} / ${r.done.length}`, r.done.length >= r.created.length ? 'keeping up' : `${r.created.length - r.done.length} more added than done`),
+    n('Busiest weekday', busiest >= 0 ? WD[busiest].slice(0, 3) : '—', busiest >= 0 ? `${r.wk[busiest]} done` : ''),
+    n('Overdue age', r.overdue.length ? r.overdueAge.toFixed(1) + ' d' : '—', r.overdue.length ? `average over ${r.overdue.length} tasks` : 'nothing overdue', r.overdue.length ? 'warn' : ''),
+    n('Urgent open', r.urgentOpen, 'marked urgent', r.urgentOpen ? 'warn' : ''),
+    n('Projects', `${r.projOpen} · ${r.projDone}`, `open · completed${r.projDoneRange ? ` (${r.projDoneRange} in range)` : ''}`),
+    n('Postponed', r.postponed.length, 'times a date was pushed'),
+    r.notesN === null ? '' : n('Notes written', r.notesN, 'in range'),
+  ].join('');
+  /* done per day (per week for long ranges) */
+  const weekly = r.days > 45;
+  const slots = [];
+  if (weekly) { let d = r.from; while (d <= r.to) { const e = addD(d, 6); let c = 0; for (let x = d; x <= e && x <= r.to; x = addD(x, 1)) c += r.perDay[x] || 0; slots.push([d, c]); d = addD(d, 7); } }
+  else for (let d = r.from; d <= r.to; d = addD(d, 1)) slots.push([d, r.perDay[d] || 0]);
+  const mx = Math.max(1, ...slots.map(s => s[1]));
+  const every = Math.ceil(slots.length / 8);
+  const chart = `<div class="dchart">${slots.map(([d, c], i) => `<span title="${esc(shortDay(d))}: ${c}"><b>${c || ''}</b><i style="height:${Math.max(3, Math.round(c / mx * 85))}%" class="${c ? '' : 'z'} ${d === today() ? 'now' : ''}"></i><em>${i % every === 0 ? esc(weekly ? shortDay(d) : String(pd(d).getDate())) : ''}</em></span>`).join('')}</div>`;
+  const wmx = Math.max(1, ...r.wk);
+  const wchart = `<div class="wchart">${r.wk.map((c, i) => `<div><span>${WD[i].slice(0, 3)}</span><span class="t"><i style="width:${Math.round(c / wmx * 100)}%"></i></span><span class="num">${c}</span></div>`).join('')}</div>`;
+  const B = r.buckets, tot = Math.max(1, B.overdue + B.today + B.week + B.later + B.none);
+  const seg = (v, c, l) => v ? `<i style="width:${v / tot * 100}%;background:${c}" title="${l}: ${v}"></i>` : '';
+  const key = (v, c, l) => `<span><i style="background:${c}"></i>${l} <b>${v}</b></span>`;
+  const due = `<div class="stack">${seg(B.overdue, 'var(--orange)', 'Overdue')}${seg(B.today, 'var(--sand)', 'Today')}${seg(B.week, 'var(--blue)', 'Next 7 days')}${seg(B.later, 'var(--green)', 'Later')}${seg(B.none, 'var(--s3)', 'No date')}</div>
+    <div class="skey">${key(B.overdue, 'var(--orange)', 'Overdue')}${key(B.today, 'var(--sand)', 'Today')}${key(B.week, 'var(--blue)', 'Next 7 days')}${key(B.later, 'var(--green)', 'Later')}${key(B.none, 'var(--s3)', 'No date')}</div>`;
+  return sec('In numbers', `<div class="nums">${cells}</div>`)
+    + sec(weekly ? 'Done per week' : 'Done per day', `<div class="card chartc">${chart}</div>`)
+    + `<div class="rgrid">${sec('By weekday', `<div class="card chartc">${wchart}</div>`)}${sec('Open tasks by due date', `<div class="card chartc">${due}</div>`)}</div>`;
 }
 function taskLine(t) {
   const bits = [];
@@ -1700,8 +1863,22 @@ document.addEventListener('click', e => {
     case 'pin-widget': try { ZeroNative.pinWidget(); } catch { } break;
     case 'install': if (deferredPrompt) { deferredPrompt.prompt(); deferredPrompt.userChoice.finally(() => { deferredPrompt = null; renderSheet(); }); } break;
     case 'show-done': ui.showDone = !ui.showDone; renderMain(); break;
+    case 'home-all': ui.homeAll = !ui.homeAll; renderMain(); break;
+    case 'show-donep': ui.showDoneP = !ui.showDoneP; renderMain(); break;
+    case 'proj-done': {
+      const p = db.projects[ui.projectId]; if (!p) break;
+      if (p.done) { upd(p, { done: false, doneAt: null }); renderMain(); break; }
+      const left = tasks().filter(x => x.projectId === p.id && !x.done).length;
+      if (left && !confirm(`${left} ${left === 1 ? 'task is' : 'tasks are'} still open in this project. Mark it completed anyway?`)) break;
+      upd(p, { done: true, doneAt: new Date().toISOString() }); toast('Project completed'); renderMain(); break;
+    }
     case 'focus': { const f = document.getElementById(el.dataset.f); if (f) { f.scrollIntoView({ block: 'center', behavior: 'smooth' }); setTimeout(() => f.focus(), 250); } break; }
-    case 'new-list': { const l = newList(el.dataset.area || 'personal'); openSheet({ type: 'list', id: l.id }); setTimeout(() => { const i = $('#l-name'); if (i) i.focus(); }, 80); break; }
+    case 'new-list': { const l = newList(el.dataset.area || 'personal', el.dataset.kind || 'list'); openSheet({ type: 'list', id: l.id }); setTimeout(() => { const i = $('#l-name'); if (i) i.focus(); }, 80); break; }
+    case 'habit-tick': { const l = db.lists[el.dataset.id]; if (!l) break; const k = el.dataset.k; const v = { ...hVals(l, k) }; if (v[el.dataset.item]) delete v[el.dataset.item]; else v[el.dataset.item] = true; updList(l, { vals: { ...(l.vals || {}), [k]: v } }); renderMain(); break; }
+    case 'habit-type': { const l = db.lists[el.dataset.id]; if (!l) break; updList(l, { items: l.items.map(x => x.id === el.dataset.item ? { ...x, type: x.type === 'num' ? 'check' : 'num' } : x) }); renderSheet(); renderMain(); break; }
+    case 'habit-day': { const l = db.lists[el.dataset.id]; if (!l) break; const rep = l.repeat || 'daily', cur = periodKey(rep); ui.hDay = ui.hDay || {}; let k = ui.hDay[l.id] || cur; if (+el.dataset.dir < 0) k = prevPeriod(rep, k); else { let x = cur, nx = null; for (let i = 0; i < 400 && x > k; i++) { nx = x; x = prevPeriod(rep, x); } k = nx || cur; } ui.hDay[l.id] = k >= cur ? null : k; renderMain(); break; }
+    case 'habit-goto': { ui.hDay = ui.hDay || {}; const l = db.lists[el.dataset.id]; if (l) { ui.hDay[l.id] = el.dataset.k === periodKey(l.repeat || 'daily') ? null : el.dataset.k; renderMain(); } break; }
+    case 'habit-more': { ui.hMore = ui.hMore || {}; ui.hMore[el.dataset.id] = !ui.hMore[el.dataset.id]; renderMain(); break; }
     case 'list-edit': if (db.lists[el.dataset.id]) openSheet({ type: 'list', id: el.dataset.id }); break;
     case 'list-tick': { const l = db.lists[el.dataset.id]; if (!l) break; const k = periodKey(l.repeat); const cur = new Set(listChecks(l, k)); const it = el.dataset.item; cur.has(it) ? cur.delete(it) : cur.add(it); updList(l, { checks: { ...(l.checks || {}), [k]: [...cur] } }); renderMain(); break; }
     case 'list-rep': { const l = db.lists[el.dataset.id]; if (l) { updList(l, { repeat: el.dataset.v }); renderSheet(); renderMain(); } break; }
@@ -1724,17 +1901,18 @@ async function saveReviewToDrive() {
 function submitQA(input) {
   const v = input.value;
   if (!v.trim()) return;
-  if (ui.view === 'notes') { newNote(v.trim()); ui.qa = ''; input.value = ''; renderMain(); toast('Note saved'); return; }
+  if (ui.view === 'notes' || ui.view === 'home') { newNote(v.trim()); ui.qa = ''; input.value = ''; renderMain(); toast('Note saved'); return; }
   if (quickAdd(v, qaCtx())) { ui.qa = ''; input.value = ''; document.querySelectorAll('.qa input').forEach(x => { x.value = ''; }); document.querySelectorAll('.qa-prev').forEach(x => { x.innerHTML = ''; }); renderMain(); }
 }
 document.addEventListener('keydown', e => {
   const el = e.target;
   if (e.key === 'Escape' && ui.sheet) { closeSheet(); return; }
   if (e.key === 'n' && !e.metaKey && !e.ctrlKey && !e.altKey && !/INPUT|TEXTAREA|SELECT/.test(el.tagName) && !ui.sheet) {
-    const i = window.innerWidth >= 900 ? $('#qa-d') : $('#qa-m'); if (i) { e.preventDefault(); i.focus(); } return;
+    const i = window.innerWidth >= 900 ? ($('#qa-d') || $('#qa-h')) : $('#qa-m'); if (i) { e.preventDefault(); i.focus(); } return;
   }
   if (e.key !== 'Enter' || e.isComposing) return;
   if (el.form) return; /* forms submit themselves (works with Arabic keyboards too) */
+  if (el.classList.contains('hnum')) { e.preventDefault(); el.blur(); return; }
   const k = el.dataset && el.dataset.enter;
   if (el.id === 't-title' || el.id === 'ev-title') { e.preventDefault(); el.blur(); return; }
   if (el.id === 'n-title') { e.preventDefault(); const b = $('#n-text'); if (b) b.focus(); return; }
@@ -1760,7 +1938,7 @@ document.addEventListener('submit', e => {
     renderMain(); refocus(input.id);
   }
   else if (kind === 'stage') { quickAdd(v, { projectId: ui.projectId, areaId: (db.projects[ui.projectId] || {}).areaId || null, stageId: f.dataset.sid || null }); renderMain(); refocus(input.id); }
-  else if (kind === 'list-item') { const l = db.lists[f.dataset.lid]; if (l) { updList(l, { items: [...l.items, { id: uid(), title: v }] }); renderMain(); if (ui.sheet && ui.sheet.type === 'list') renderSheet(); refocus(input.id); } }
+  else if (kind === 'list-item') { const l = db.lists[f.dataset.lid]; if (l) { updList(l, { items: [...l.items, l.kind === 'habit' ? { id: uid(), title: v, type: /وزن|weight|kg|كيلو|steps|خطوات|ساعات|hours|ريال|omr|\$|مبلغ|سعرات|kcal/i.test(v) ? 'num' : 'check' } : { id: uid(), title: v }] }); renderMain(); if (ui.sheet && ui.sheet.type === 'list') renderSheet(); refocus(input.id); } }
   else if (kind === 'proj') { const aid = areaOf(ui.view) ? ui.view : null; const p = newProject(v, aid); toast('Project created'); openProject(p.id); }
   else if (kind === 'area-task') { quickAdd(v, { areaId: ui.view }); renderMain(); refocus('area-new'); }
 });
@@ -1769,11 +1947,12 @@ document.addEventListener('input', e => {
   const el = e.target; const t = curTask();
   if (el.dataset && el.dataset.enter === 'qa') {
     ui.qa = el.value;
-    const prev = document.getElementById(el.id + '-prev'); if (prev) prev.innerHTML = ui.view === 'notes' ? '' : qaPreview(el.value);
+    const prev = document.getElementById(el.id + '-prev'); if (prev) prev.innerHTML = ui.view === 'notes' || ui.view === 'home' ? '' : qaPreview(el.value);
     return;
   }
   if (el.classList.contains('title-in') && el.tagName === 'TEXTAREA') { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
   if (t && el.id === 't-title') { t.title = el.value; t.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(save, 600); return; }
+  if (el.classList && el.classList.contains('hunit')) { const l = db.lists[el.dataset.lid]; if (l) { l.items = l.items.map(x => x.id === el.dataset.item ? { ...x, unit: el.value } : x); l.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(() => { save(); renderMain(); }, 500); } return; }
   if (el.id === 'l-name' && ui.sheet && ui.sheet.type === 'list') { const l = db.lists[ui.sheet.id]; if (l) { l.name = el.value; l.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(() => { save(); renderMain(); }, 500); } return; }
   if (el.id === 'note-q') { ui.nq = el.value; const pos = el.selectionStart; renderMain(); const q = $('#note-q'); if (q) { q.focus(); try { q.setSelectionRange(pos, pos); } catch { } } return; }
   if ((el.id === 'n-text' || el.id === 'n-title') && ui.sheet && ui.sheet.type === 'note') {
@@ -1798,6 +1977,14 @@ document.addEventListener('input', e => {
   if (p && el.dataset.stage) { p.stages = p.stages.map(s => s.id === el.dataset.stage ? { ...s, name: el.value } : s); p.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(save, 600); }
 });
 document.addEventListener('change', e => {
+  const he = e.target;
+  if (he.classList && he.classList.contains('hnum')) {
+    const l = db.lists[he.dataset.lid]; if (!l) return;
+    const raw = he.value.replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/[٫,]/g, '.').trim();
+    const v = { ...hVals(l, he.dataset.k) };
+    if (raw === '') delete v[he.dataset.item]; else { const n = parseFloat(raw); if (isNaN(n)) { toast('Type a number'); return; } v[he.dataset.item] = n; }
+    updList(l, { vals: { ...(l.vals || {}), [he.dataset.k]: v } }); renderMain(); return;
+  }
   const el = e.target; const t = curTask();
   if (t) {
     if (el.id === 't-due') { setDue(t, el.value || null); renderSheet(); renderMain(); return; }
@@ -1875,7 +2062,7 @@ function handleLaunch() {
   if (t && db.tasks[t] && !db.tasks[t].deleted) openSheet({ type: 'task', id: t });
   else if (a === 'event') openEventSheet(null, { date: ui.sel });
   else if (a === 'note') { const n = newNote(''); openNote(n.id); }
-  else if (a === 'add') setTimeout(() => { const i = window.innerWidth >= 900 ? $('#qa-d') : $('#qa-m'); if (i) i.focus(); }, 150);
+  else if (a === 'add') setTimeout(() => { const i = window.innerWidth >= 900 ? ($('#qa-d') || $('#qa-h')) : $('#qa-m'); if (i) i.focus(); }, 150);
 }
 
 renderMain(); renderSheet();
