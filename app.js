@@ -899,7 +899,7 @@ function periodLabel(rep, k) {
 }
 const listChecks = (l, k) => (l.checks && l.checks[k]) || [];
 function newList(areaId, kind = 'list') {
-  const l = { id: uid(), name: '', areaId, kind, repeat: kind === 'habit' ? 'daily' : '', items: [], checks: {}, vals: {}, createdAt: new Date().toISOString(), updatedAt: now(), deleted: false };
+  const l = { id: uid(), name: '', areaId, kind, htype: kind === 'habit' ? 'yn' : undefined, unit: '', repeat: kind === 'habit' ? 'daily' : '', items: [], checks: {}, vals: {}, createdAt: new Date().toISOString(), updatedAt: now(), deleted: false };
   db.lists[l.id] = l; save(); return l;
 }
 function updList(l, ch) { Object.assign(l, ch, { updatedAt: now() }); save(); }
@@ -930,6 +930,7 @@ function listsHTML(areaId) {
     <button class="dash" style="width:100%;margin-top:10px" data-act="new-list" data-area="${areaId}">+ New to-do list</button>`, { right: `<span class="mut">${ls.length}</span>` });
 }
 function listSheet(l) {
+  if (l.kind === 'habit') return habitSheet(l);
   return `
   <div class="sheet-top"><button class="ib" data-act="close-sheet" aria-label="Close">${I.l}</button><span class="crumb">${l.kind === 'habit' ? 'Habit tracker' : 'To-do list'}</span><button class="ib" data-act="list-del" data-id="${esc(l.id)}" aria-label="Delete list">${I.trash}</button></div>
   <textarea id="l-name" class="title-in" rows="1" dir="auto" placeholder="${l.kind === 'habit' ? 'Tracker name, e.g. صحتي' : 'List name, e.g. عادات يومية'}">${esc(l.name || '')}</textarea>
@@ -939,61 +940,258 @@ function listSheet(l) {
   ${sec('Items', `${l.items.map((it, i) => `<div class="litem"><span class="lt" dir="auto">${esc(it.title)}</span>${l.kind === 'habit' ? `${it.type === 'num' ? `<input class="hunit" id="hu-${esc(it.id)}" data-lid="${esc(l.id)}" data-item="${esc(it.id)}" dir="auto" placeholder="unit" value="${esc(it.unit || '')}" aria-label="Unit for ${esc(it.title)}">` : ''}<button class="htype" data-act="habit-type" data-id="${esc(l.id)}" data-item="${esc(it.id)}" aria-label="Switch between tick and number">${it.type === 'num' ? '123' : '✓'}</button>` : ''}<button class="ib" data-act="list-up" data-id="${esc(l.id)}" data-i="${i}" aria-label="Move up" ${i ? '' : 'disabled style="opacity:.3"'}>${I.l}</button><button class="ib" data-act="list-item-del" data-id="${esc(l.id)}" data-item="${esc(it.id)}" aria-label="Remove ${esc(it.title)}">${I.x}</button></div>`).join('') || '<div class="empty" style="padding:6px 0">No items yet.</div>'}
     ${addForm('list-item', l.kind === 'habit' ? 'Add something to track, e.g. الوزن' : 'Add an item', { id: 'ls-new', data: `data-lid="${esc(l.id)}"` })}`)}`;
 }
-/* habit trackers: ticks and numbers per day (or week / month), with a clean log underneath */
-const hVals = (l, k) => (l.vals && l.vals[k]) || {};
+/* ---------------- habit trackers ----------------
+   One habit per tracker, shown as a month calendar. Two kinds:
+   'yn'  – did it (green ✓) or didn't (red ✗), tap a day to cycle ✓ → ✗ → empty
+   'num' – a number you type in for the day, like weight */
+const hv = (l, d) => (l.vals || {})[d];
 const fmtNum = v => (Math.round(v * 100) / 100).toLocaleString('en-GB', { maximumFractionDigits: 2 });
-function hPeriods(l, k, n) { const out = []; let x = k; for (let i = 0; i < n; i++) { out.push(x); x = prevPeriod(l.repeat || 'daily', x); } return out; }
 function sparkSVG(pts, w = 120, h = 30) {
   if (pts.length < 2) return '';
   const mn = Math.min(...pts), mx = Math.max(...pts), sp = mx - mn || 1;
   const xy = pts.map((v, i) => [(i / (pts.length - 1)) * (w - 4) + 2, h - 3 - ((v - mn) / sp) * (h - 6)]);
   return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><polyline fill="none" stroke="var(--sand)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="${xy.map(p => p.map(n => n.toFixed(1)).join(',')).join(' ')}"/><circle cx="${xy[xy.length - 1][0].toFixed(1)}" cy="${xy[xy.length - 1][1].toFixed(1)}" r="3" fill="var(--sand2)"/></svg>`;
 }
+/* trackers made with the first version (several items in one tracker) become one tracker per item */
+function migrateHabits() {
+  let ch = false;
+  Object.values(db.lists || {}).forEach(l => {
+    if (l.kind !== 'habit' || l.deleted || l.htype) return;
+    const items = l.items || [];
+    if (!items.length) { Object.assign(l, { htype: 'yn', vals: {}, updatedAt: now() }); ch = true; return; }
+    items.forEach(it => {
+      const vals = {};
+      Object.entries(l.vals || {}).forEach(([k, v]) => { if (v && v[it.id] !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(k)) vals[k] = it.type === 'num' ? v[it.id] : !!v[it.id]; });
+      const id = uid();
+      db.lists[id] = { id, name: it.title, areaId: l.areaId, kind: 'habit', htype: it.type === 'num' ? 'num' : 'yn', unit: it.unit || '', vals, items: [], checks: {}, createdAt: l.createdAt, updatedAt: now(), deleted: false };
+    });
+    Object.assign(l, { deleted: true, updatedAt: now() }); ch = true;
+  });
+  if (ch) save();
+}
+function hStreak(l) {
+  let d = today(); if (hv(l, d) !== true) d = addD(d, -1);
+  let c = 0; while (hv(l, d) === true && c < 3000) { c++; d = addD(d, -1); }
+  return c;
+}
+function hMonth(l, m) {
+  const td = today(); let yes = 0, no = 0, days = 0; const nums = [];
+  for (let d = m + '-01'; d.slice(0, 7) === m && d <= td; d = addD(d, 1)) {
+    days++; const v = hv(l, d);
+    if (v === true) yes++; else if (v === false) no++; else if (typeof v === 'number') nums.push(v);
+  }
+  return { yes, no, days, nums };
+}
+function hLast(l) {
+  const ks = Object.keys(l.vals || {}).filter(k => typeof l.vals[k] === 'number' && k <= today()).sort();
+  return ks.length ? { d: ks[ks.length - 1], v: l.vals[ks[ks.length - 1]], prev: ks.length > 1 ? l.vals[ks[ks.length - 2]] : null } : null;
+}
 function habitCardHTML(l) {
-  const rep = l.repeat || 'daily', cur = periodKey(rep);
-  const k = (ui.hDay && ui.hDay[l.id]) || cur;
-  const v = hVals(l, k), n = l.items.length;
-  const filled = l.items.filter(it => v[it.id] !== undefined && v[it.id] !== false && v[it.id] !== '').length;
-  const lastNum = it => { for (const p of hPeriods(l, prevPeriod(rep, k), 60)) { const x = hVals(l, p)[it.id]; if (typeof x === 'number') return x; } return null; };
-  const rows = l.items.map(it => {
-    if (it.type === 'num') {
-      const ln = lastNum(it);
-      return `<div class="litem hrow"><span class="lt" dir="auto">${esc(it.title)}</span><input class="hnum" id="hn-${esc(l.id)}-${esc(it.id)}" data-lid="${esc(l.id)}" data-item="${esc(it.id)}" data-k="${esc(k)}" inputmode="decimal" enterkeyhint="done" value="${typeof v[it.id] === 'number' ? String(Math.round(v[it.id] * 100) / 100) : ''}" placeholder="${ln !== null ? fmtNum(ln) : '—'}" aria-label="${esc(it.title)}"><span class="hu">${esc(it.unit || '')}</span></div>`;
+  const td = today(), m = (ui.hMonth && ui.hMonth[l.id]) || td.slice(0, 7);
+  const first = pd(m + '-01'), lead = first.getDay();
+  const dim = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+  const total = Math.ceil((lead + dim) / 7) * 7, start = addD(m + '-01', -lead);
+  const isNum = l.htype === 'num';
+  const sel = (ui.hSel && ui.hSel[l.id]) || td;
+  let cells = '';
+  for (let i = 0; i < total; i++) {
+    const d = addD(start, i), out = d.slice(0, 7) !== m, fut = d > td, v = hv(l, d);
+    const mark = isNum ? (typeof v === 'number' ? `<b>${fmtNum(v)}</b>` : '') : v === true ? `<i class="hy">${I.check}</i>` : v === false ? `<i class="hn">${I.x}</i>` : '';
+    const cls = [out ? 'out' : '', d === td ? 'today' : '', isNum && d === sel ? 'sel' : '', v === true ? 'yes' : v === false ? 'no' : typeof v === 'number' ? 'val' : ''].join(' ');
+    cells += `<button class="hc ${cls}" data-act="hcell" data-id="${esc(l.id)}" data-d="${d}" ${fut || out ? 'disabled' : ''} aria-label="${esc(fmtDay(d))}${v === true ? ', done' : v === false ? ', not done' : typeof v === 'number' ? ', ' + fmtNum(v) : ''}"><span class="dn">${pd(d).getDate()}</span>${mark}</button>`;
+  }
+  const st = hMonth(l, m);
+  let meta, foot = '';
+  if (isNum) {
+    const last = hLast(l);
+    meta = last ? `<b>${fmtNum(last.v)}</b>${esc(l.unit ? ' ' + l.unit : '')}${last.prev !== null ? ` <em class="${last.v > last.prev ? 'up' : last.v < last.prev ? 'down' : ''}">${last.v > last.prev ? '+' : ''}${fmtNum(last.v - last.prev)}</em>` : ''}` : '<span class="mut">no entries yet</span>';
+    const sv = hv(l, sel);
+    foot = `<div class="hedit"><span class="hd">${sel === td ? 'Today' : esc(fmtDay(sel))}</span><input class="hnum" id="hn-${esc(l.id)}" data-lid="${esc(l.id)}" data-k="${sel}" inputmode="decimal" enterkeyhint="done" value="${typeof sv === 'number' ? String(Math.round(sv * 100) / 100) : ''}" placeholder="${hLast(l) ? fmtNum(hLast(l).v) : '0'}" aria-label="${esc(l.name || 'Value')} for ${esc(fmtDay(sel))}"><span class="hu">${esc(l.unit || '')}</span>${typeof sv === 'number' ? `<button class="pill" data-act="hclear" data-id="${esc(l.id)}" data-d="${sel}">Clear</button>` : ''}</div>`;
+    if (st.nums.length) {
+      const avg = st.nums.reduce((a, b) => a + b, 0) / st.nums.length;
+      foot += `<div class="htrend">${sparkSVG(st.nums, 130, 32)}<span class="hv"><small>this month</small><span>avg <b>${fmtNum(avg)}</b></span><small>${fmtNum(Math.min(...st.nums))} – ${fmtNum(Math.max(...st.nums))}</small></span></div>`;
     }
-    const on = !!v[it.id];
-    return `<div class="litem hrow ${on ? 'isdone' : ''}"><span class="lt" dir="auto">${esc(it.title)}</span><button class="chk ${on ? 'done' : ''}" data-act="habit-tick" data-id="${esc(l.id)}" data-item="${esc(it.id)}" data-k="${esc(k)}" aria-pressed="${on}" aria-label="${esc(it.title)}">${on ? I.check : ''}</button></div>`;
-  }).join('');
-  const show = (ui.hMore && ui.hMore[l.id]) ? 30 : 7;
-  const per = hPeriods(l, cur, show);
-  const short = p => rep === 'daily' ? pd(p).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : periodLabel(rep, p);
-  const table = n ? `<div class="htab-wrap"><table class="htab"><thead><tr><th></th>${l.items.map(it => `<th dir="auto">${esc(it.title)}${it.unit ? ` <small>${esc(it.unit)}</small>` : ''}</th>`).join('')}</tr></thead>
-    <tbody>${per.map(p => { const pv = hVals(l, p); return `<tr class="${p === k ? 'sel' : ''}" data-act="habit-goto" data-id="${esc(l.id)}" data-k="${esc(p)}"><td>${esc(short(p))}</td>${l.items.map(it => { const x = pv[it.id]; return `<td>${it.type === 'num' ? (typeof x === 'number' ? `<b>${fmtNum(x)}</b>` : '<span class="nil">·</span>') : (x ? `<span class="yes">${I.check}</span>` : '<span class="nil">·</span>')}</td>`; }).join('')}</tr>`; }).join('')}</tbody></table></div>
-    <button class="pill" style="margin:8px 0 4px" data-act="habit-more" data-id="${esc(l.id)}">${show === 7 ? 'Show 30' : 'Show 7'}</button>` : '';
-  /* numbers over time */
-  const trends = l.items.filter(it => it.type === 'num').map(it => {
-    const pts = hPeriods(l, cur, 30).reverse().map(p => hVals(l, p)[it.id]).filter(x => typeof x === 'number');
-    if (!pts.length) return '';
-    const last = pts[pts.length - 1], prev = pts.length > 1 ? pts[pts.length - 2] : null, d = prev === null ? null : last - prev;
-    return `<div class="htrend"><span class="lt" dir="auto">${esc(it.title)}</span>${sparkSVG(pts)}<span class="hv"><b>${fmtNum(last)}</b>${esc(it.unit ? ' ' + it.unit : '')}${d !== null ? ` <em class="${d > 0 ? 'up' : d < 0 ? 'down' : ''}">${d > 0 ? '+' : ''}${fmtNum(d)}</em>` : ''}<small>${pts.length > 1 ? `${fmtNum(Math.min(...pts))}–${fmtNum(Math.max(...pts))}` : ''}</small></span></div>`;
-  }).join('');
-  /* tick streaks */
-  const unit = c => rep === 'daily' ? (c === 1 ? 'day' : 'days') : rep === 'weekly' ? (c === 1 ? 'week' : 'weeks') : (c === 1 ? 'month' : 'months');
-  const streaks = l.items.filter(it => it.type !== 'num').map(it => { let c = 0; for (const p of hPeriods(l, hVals(l, cur)[it.id] ? cur : prevPeriod(rep, cur), 400)) { if (hVals(l, p)[it.id]) c++; else break; } return c ? `<span class="hstreak" dir="auto">${esc(it.title)} · <b>${c}</b> ${unit(c)} in a row</span>` : ''; }).join('');
-  return `<div class="card hcard">
-    <div class="lh"><button class="lname" data-act="list-edit" data-id="${esc(l.id)}" dir="auto">${esc(l.name || 'Untitled tracker')}</button><span class="lmeta">${filled}/${n}</span><button class="ib" data-act="list-edit" data-id="${esc(l.id)}" aria-label="Edit tracker">${I.gear}</button></div>
-    <div class="hnav"><button class="ib" data-act="habit-day" data-id="${esc(l.id)}" data-dir="-1" aria-label="Previous">${I.l}</button><span>${k === cur ? ({ daily: 'Today', weekly: 'This week', monthly: 'This month' })[rep] : esc(periodLabel(rep, k))}</span><button class="ib" data-act="habit-day" data-id="${esc(l.id)}" data-dir="1" aria-label="Next" ${k === cur ? 'disabled style="opacity:.3"' : ''}>${I.r}</button></div>
-    ${rows || '<div class="empty" style="padding:6px 0">Add what you want to track: weight, water, reading…</div>'}
-    ${addForm('list-item', 'Add something to track', { id: 'hi-' + l.id, data: `data-lid="${esc(l.id)}"` })}
-    ${streaks ? `<div class="hstreaks">${streaks}</div>` : ''}
-    ${trends}
-    ${table}
+  } else {
+    const s = hStreak(l);
+    meta = `<span class="cy">✓ ${st.yes}</span><span class="cn">✗ ${st.no}</span>${s ? `<span class="cs">${s} ${s === 1 ? 'day' : 'days'} in a row</span>` : ''}`;
+  }
+  const mName = first.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+  return `<div class="card hcard ${isNum ? 'hk-num' : 'hk-yn'}">
+    <div class="lh"><button class="lname" data-act="list-edit" data-id="${esc(l.id)}" dir="auto">${esc(l.name || 'Untitled habit')}</button><button class="ib" data-act="list-edit" data-id="${esc(l.id)}" aria-label="Edit habit">${I.gear}</button></div>
+    <div class="hmeta">${meta}</div>
+    <div class="hnav"><button class="ib" data-act="hmonth" data-id="${esc(l.id)}" data-dir="-1" aria-label="Previous month">${I.l}</button><span>${esc(mName)}</span><button class="ib" data-act="hmonth" data-id="${esc(l.id)}" data-dir="1" aria-label="Next month" ${m >= td.slice(0, 7) ? 'disabled style="opacity:.3"' : ''}>${I.r}</button></div>
+    <div class="hwd">${['S', 'M', 'T', 'W', 'T', 'F', 'S'].map(w => `<span>${w}</span>`).join('')}</div>
+    <div class="hgrid">${cells}</div>
+    ${isNum ? foot : '<p class="hhint">Tap a day: ✓ done · tap again: ✗ not done · again to clear</p>'}
   </div>`;
 }
+/* achievement cards for the section: habits and repeating tasks */
+function personalStatsHTML(aid) {
+  const td = today(), m = td.slice(0, 7);
+  const hs = lists(aid, 'habit');
+  const hDone = hs.filter(l => l.htype === 'num' ? typeof hv(l, td) === 'number' : hv(l, td) === true).length;
+  const reps = tasks().filter(t => t.repeat && taskArea(t) === aid);
+  const repLogs = Object.values(db.log).filter(l => l.type === 'done' && l.repeat && (db.tasks[l.taskId] ? taskArea(db.tasks[l.taskId]) === aid : l.areaId === aid));
+  const repToday = repLogs.filter(l => isoDay(l.at) === td).length;
+  const repLeft = reps.filter(t => !t.done && t.due && t.due <= td).length;
+  const goal = hs.length + repToday + repLeft, got = hDone + repToday;
+  const yn = hs.filter(l => l.htype !== 'num');
+  let yes = 0, days = 0; yn.forEach(l => { const s = hMonth(l, m); yes += s.yes; days += s.days; });
+  const best = yn.map(l => [l, hStreak(l)]).sort((a, b) => b[1] - a[1])[0];
+  const repMonth = repLogs.filter(l => isoDay(l.at).slice(0, 7) === m);
+  const onTime = repMonth.filter(l => !(l.late > 0)).length;
+  const card = (k, v, sub, cls) => `<div class="card hst ${cls}"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${sub}</span></div>`;
+  return `<section class="sec"><div class="sec-h"><h2>Progress</h2></div><div class="hstats">
+    <div class="card hring">
+      <div class="rwrap">${ringSVG(goal ? got / goal : 0)}<div class="rnum"><b>${got}</b><span>${goal ? 'of ' + goal : 'today'}</span></div></div>
+      <div class="rinfo"><span class="k">Today</span><span class="s">${goal ? `${hDone}/${hs.length} habits · ${repToday}/${repToday + repLeft} repeating tasks` : 'Add a habit or a repeating task to see your progress here'}</span></div>
+    </div>
+    ${card('Habits this month', days ? Math.round(yes / days * 100) + '%' : '—', yn.length ? `${yes} ✓ in ${days} habit-days` : 'no ✓/✗ habits yet', 'c-done')}
+    ${card('Best streak', best && best[1] ? best[1] : '—', best && best[1] ? `<span dir="auto">${esc(best[0].name || 'Habit')}</span> · days` : 'tick a habit today to start one', 'c-open')}
+    ${card('Repeating tasks', repMonth.length, repMonth.length ? `done this month · ${Math.round(onTime / repMonth.length * 100)}% on time` : 'done this month', repMonth.length && onTime < repMonth.length ? 'c-late' : 'c-ok')}
+  </div></section>`;
+}
 function habitsHTML(areaId) {
+  migrateHabits();
   const ls = lists(areaId, 'habit');
-  return sec('Habit trackers', `<div class="plist">${ls.map(habitCardHTML).join('')}</div>
-    ${ls.length ? '' : '<p class="mut" style="font-size:12px;margin:0 2px">Track things every day: tick the ones you just do, type a number for the ones you measure (weight, steps, money). Everything is kept as a clean log.</p>'}
+  return sec('Habit trackers', `<div class="hlist">${ls.map(habitCardHTML).join('')}</div>
+    ${ls.length ? '' : '<p class="mut" style="font-size:12px;margin:0 2px">Each habit gets its own calendar: green ✓ or red ✗ for things you did or didn’t do, or a number you type in, like your weight.</p>'}
     <button class="dash" style="width:100%;margin-top:10px" data-act="new-list" data-area="${areaId}" data-kind="habit">+ New habit tracker</button>`, { right: `<span class="mut">${ls.length}</span>` });
+}
+function habitSheet(l) {
+  const n = Object.keys(l.vals || {}).length;
+  return `
+  <div class="sheet-top"><button class="ib" data-act="close-sheet" aria-label="Close">${I.l}</button><span class="crumb">Habit tracker</span><button class="ib" data-act="list-del" data-id="${esc(l.id)}" aria-label="Delete habit">${I.trash}</button></div>
+  <textarea id="l-name" class="title-in" rows="1" dir="auto" placeholder="Habit, e.g. الوزن or رياضة">${esc(l.name || '')}</textarea>
+  ${sec('Type', `<div class="htypes">
+    <button class="htypeb ${l.htype !== 'num' ? 'on' : ''}" data-act="htype" data-id="${esc(l.id)}" data-v="yn"><span class="ic"><i class="hy">${I.check}</i><i class="hn">${I.x}</i></span><b>Did it / didn’t</b><small>Green ✓ or red ✗ on each day</small></button>
+    <button class="htypeb ${l.htype === 'num' ? 'on' : ''}" data-act="htype" data-id="${esc(l.id)}" data-v="num"><span class="ic num">123</span><b>Number</b><small>Type a value each day, like weight</small></button>
+  </div>
+  ${l.htype === 'num' ? `<div class="card" style="margin-top:10px"><div class="field"><label for="h-unit">Unit</label><input id="h-unit" class="tin" data-lid="${esc(l.id)}" dir="auto" placeholder="kg, steps, OMR…" value="${esc(l.unit || '')}" style="max-width:160px;text-align:end"></div></div>` : ''}
+  ${n ? `<p class="mut" style="font-size:12px;margin:10px 2px 0">${n} ${n === 1 ? 'day' : 'days'} recorded. Switching the type keeps them.</p>` : ''}`)}`;
+}
+/* ---------------- rich notes ----------------
+   Notes keep a small HTML subset: <h1>, <h2>, <p> blocks with <b> (bold) and <span class="l"> (light) inside.
+   The tablet's native editor reads and writes exactly the same subset (RichText.kt). n.text stays as plain text. */
+const NOTE_COLORS = [['#0E0F13', 'Black'], ['#1D202C', 'Navy'], ['#18222F', 'Ink'], ['#1A2621', 'Forest'], ['#251E2C', 'Plum'], ['#2A221E', 'Cocoa'], ['#23262C', 'Slate'], ['#29261E', 'Olive']];
+const noteColor = n => (n && n.color) || NOTE_COLORS[0][0];
+function richParse(html) {
+  const t = document.createElement('template'); t.innerHTML = html || '';
+  const blocks = []; let cur = null;
+  const open = tag => { cur = { tag, segs: [] }; blocks.push(cur); };
+  const walk = (node, f) => {
+    node.childNodes.forEach(ch => {
+      if (ch.nodeType === 3) { if (!cur) open('p'); if (ch.nodeValue) cur.segs.push({ t: ch.nodeValue.replace(/ /g, ' '), b: f.b, l: f.l }); return; }
+      if (ch.nodeType !== 1) return;
+      const tag = ch.tagName.toLowerCase();
+      if (tag === 'br') { if (ch.nextSibling) open('p'); else if (!cur) open('p'); return; }
+      if (/^(h1|h2|h3|p|div|li|blockquote)$/.test(tag)) { open(tag === 'h1' ? 'h1' : tag === 'h2' || tag === 'h3' ? 'h2' : 'p'); walk(ch, f); cur = null; return; }
+      const fw = ch.style && ch.style.fontWeight;
+      const nf = { b: f.b || tag === 'b' || tag === 'strong' || fw === 'bold' || +fw >= 600, l: f.l || (ch.classList && ch.classList.contains('l')) || (+fw && +fw <= 300) };
+      if (nf.b && nf.l) nf.l = false;
+      walk(ch, nf);
+    });
+  };
+  walk(t.content, { b: false, l: false });
+  return blocks;
+}
+function richOut(blocks) {
+  const html = blocks.map(bl => {
+    const merged = [];
+    bl.segs.forEach(s => { const last = merged[merged.length - 1]; if (last && last.b === s.b && last.l === s.l) last.t += s.t; else merged.push({ ...s }); });
+    return `<${bl.tag}>${merged.map(s => s.b ? `<b>${esc(s.t)}</b>` : s.l ? `<span class="l">${esc(s.t)}</span>` : esc(s.t)).join('')}</${bl.tag}>`;
+  }).join('');
+  const text = blocks.map(bl => bl.segs.map(s => s.t).join('')).join('\n');
+  return { html, text };
+}
+const textToHtml = txt => String(txt || '').split('\n').map(l => `<p>${esc(l)}</p>`).join('');
+/* what goes into the editor: clean subset, with a <br> in empty blocks so the caret can sit there */
+function richForEditor(n) {
+  const h = richOut(richParse(n.html ? n.html : textToHtml(n.text))).html || '<p></p>';
+  return h.replace(/<(p|h1|h2)><\/\1>/g, '<$1><br></$1>');
+}
+function richSave() {
+  const ed = $('#n-rich'); const n = ui.sheet && db.notes[ui.sheet.id]; if (!ed || !n) return;
+  const r = richOut(richParse(ed.innerHTML));
+  n.html = r.html; n.text = r.text.replace(/\n+$/, ''); n.updatedAt = now();
+  clearTimeout(typeT); typeT = setTimeout(save, 500);
+  const m = document.getElementById('n-meta'); if (m) m.textContent = noteMeta(n);
+}
+function richEnsureBlock() {
+  const ed = $('#n-rich'); if (!ed) return;
+  if (!ed.firstChild) { ed.innerHTML = '<p><br></p>'; return; }
+  /* loose text typed straight into the editor goes into a paragraph */
+  [...ed.childNodes].forEach(ch => { if (ch.nodeType === 3 || (ch.nodeType === 1 && !/^(P|H1|H2|DIV)$/.test(ch.tagName))) { const p = document.createElement('p'); ch.replaceWith(p); p.appendChild(ch); } });
+}
+function richBlocksIn(r) {
+  const ed = $('#n-rich');
+  return [...ed.children].filter(b => r.intersectsNode(b));
+}
+function richWeight(w) {
+  const ed = $('#n-rich'); const sel = getSelection(); if (!ed || !sel.rangeCount) return;
+  let r = sel.getRangeAt(0); if (!ed.contains(r.commonAncestorContainer)) return;
+  if (r.collapsed && sel.modify) { sel.modify('move', 'backward', 'word'); sel.modify('extend', 'forward', 'word'); r = sel.getRangeAt(0); }
+  if (r.collapsed) return;
+  const wrapped = [];
+  richBlocksIn(r).forEach(bl => {
+    const sub = document.createRange(); sub.selectNodeContents(bl);
+    if (bl.contains(r.startContainer) || bl === r.startContainer) sub.setStart(r.startContainer, r.startOffset);
+    if (bl.contains(r.endContainer) || bl === r.endContainer) sub.setEnd(r.endContainer, r.endOffset);
+    if (sub.collapsed) return;
+    const frag = sub.extractContents();
+    frag.querySelectorAll('b,strong,span').forEach(x => x.replaceWith(...x.childNodes));
+    let node;
+    if (w === 'bold') { node = document.createElement('b'); node.appendChild(frag); }
+    else if (w === 'light') { node = document.createElement('span'); node.className = 'l'; node.appendChild(frag); }
+    else { node = document.createElement('span'); node.dataset.tmp = '1'; node.appendChild(frag); }
+    sub.insertNode(node);
+    /* step out of any bold / light span the selection sat inside */
+    let a;
+    while ((a = node.parentElement) && a !== bl && /^(B|STRONG|SPAN)$/.test(a.tagName)) {
+      const tail = document.createRange(); tail.setStartAfter(node); tail.setEnd(a, a.childNodes.length);
+      const rest = tail.extractContents();
+      a.after(node);
+      if (rest.textContent) { const a2 = a.cloneNode(false); a2.appendChild(rest); node.after(a2); }
+      if (!a.textContent) a.remove();
+    }
+    wrapped.push(node);
+  });
+  if (!wrapped.length) return;
+  const nr = document.createRange(); nr.setStartBefore(wrapped[0]); nr.setEndAfter(wrapped[wrapped.length - 1]);
+  sel.removeAllRanges(); sel.addRange(nr);
+  richSave();
+}
+function richBlock(tag) {
+  const ed = $('#n-rich'); if (!ed) return;
+  ed.focus();
+  document.execCommand('formatBlock', false, tag);
+  richEnsureBlock(); richSave(); richToolsState();
+}
+function richToolsState() {
+  const tb = $('#ntools'); const sel = getSelection(); if (!tb || !sel.rangeCount) return;
+  let n = sel.anchorNode; if (n && n.nodeType === 3) n = n.parentElement;
+  const ed = $('#n-rich'); if (!ed || !n || !ed.contains(n)) return;
+  const blk = n.closest('h1,h2') ? n.closest('h1,h2').tagName.toLowerCase() : 'p';
+  const w = n.closest('b,strong') ? 'bold' : n.closest('span.l') ? 'light' : 'regular';
+  tb.querySelectorAll('[data-fmt]').forEach(b => b.classList.toggle('on', b.dataset.fmt === blk || b.dataset.fmt === w));
+}
+document.addEventListener('selectionchange', () => { if ($('#n-rich')) richToolsState(); });
+/* keep the text selected when a format button is pressed */
+document.addEventListener('pointerdown', e => { if (e.target.closest && e.target.closest('#ntools [data-fmt]')) e.preventDefault(); });
+document.addEventListener('paste', e => {
+  if (!e.target.closest || !e.target.closest('#n-rich')) return;
+  e.preventDefault();
+  const t = (e.clipboardData || window.clipboardData).getData('text/plain');
+  document.execCommand('insertText', false, t);
+});
+function noteToolsHTML(n) {
+  const c = noteColor(n);
+  return `<div class="ntools" id="ntools" role="toolbar" aria-label="Formatting">
+    <div class="ng"><button data-act="nfmt" data-fmt="h1" aria-label="Heading 1">H1</button><button data-act="nfmt" data-fmt="h2" aria-label="Heading 2">H2</button><button data-act="nfmt" data-fmt="p" aria-label="Body text">Text</button></div>
+    <div class="ng"><button data-act="nfmt" data-fmt="bold" aria-label="Bold"><b>B</b></button><button data-act="nfmt" data-fmt="regular" aria-label="Regular">Aa</button><button data-act="nfmt" data-fmt="light" aria-label="Light"><span style="font-weight:300">Aa</span></button></div>
+    <button class="ncol" data-act="ncolors" aria-label="Page colour" aria-expanded="${!!ui.nColors}"><i style="background:${c}"></i></button>
+  </div>
+  ${ui.nColors ? `<div class="nswatch" role="group" aria-label="Page colour">${NOTE_COLORS.map(([v, nm]) => `<button data-act="ncolor" data-v="${v}" aria-label="${nm}" aria-pressed="${c === v}" class="${c === v ? 'on' : ''}"><i style="background:${v}"></i><span>${nm}</span></button>`).join('')}</div>` : ''}`;
 }
 
 
@@ -1196,7 +1394,7 @@ window.__zeroInkPull = () => {
     const cur = db.notes[x.id];
     if (cur && (x.updatedAt || 0) < (cur.updatedAt || 0)) continue;
     if (x.deleted) { if (cur && !cur.deleted) { cur.deleted = true; cur.updatedAt = x.updatedAt; changed = true; } continue; }
-    db.notes[x.id] = { ...(cur || { id: x.id, createdAt: x.createdAt || new Date().toISOString() }), title: x.title || '', text: x.text || '', ink: x.ink || null, updatedAt: x.updatedAt, deleted: false };
+    db.notes[x.id] = { ...(cur || { id: x.id, createdAt: x.createdAt || new Date().toISOString() }), title: x.title || '', text: x.text || '', html: x.html || null, color: x.color || null, ink: x.ink || null, updatedAt: x.updatedAt, deleted: false };
     changed = true;
   }
   if (changed) { save(); renderMain(); if (ui.sheet && ui.sheet.type === 'note') renderSheet(); }
@@ -1250,7 +1448,7 @@ function notesView() {
   if (list.length > 5) html += `<input id="note-q" class="tin" dir="auto" type="search" placeholder="Search notes" value="${esc(ui.nq)}" style="margin-bottom:12px">`;
   html += `<div class="ngrid">${shown.map((n, i) => {
     const { t, p } = noteTitle(n);
-    return `<button class="ncard ${i === 0 && !q ? 'first' : ''}" data-act="open-note" data-id="${esc(n.id)}"><span class="t" dir="auto">${esc(t)}</span>${p ? `<span class="p" dir="auto">${esc(p.slice(0, 280))}</span>` : ''}${hasInk(n) ? `<canvas class="nthumb" data-ink="${esc(n.id)}" aria-hidden="true"></canvas>` : ''}<span class="d">${esc(new Date(n.updatedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</span></button>`;
+    return `<button class="ncard ${i === 0 && !q && !n.color ? 'first' : ''} ${n.color ? 'tinted' : ''}" data-act="open-note" data-id="${esc(n.id)}" ${n.color ? `style="--npage:${esc(n.color)}"` : ''}><span class="t" dir="auto">${esc(t)}</span>${p ? `<span class="p" dir="auto">${esc(p.slice(0, 280))}</span>` : ''}${hasInk(n) ? `<canvas class="nthumb" data-ink="${esc(n.id)}" aria-hidden="true"></canvas>` : ''}<span class="d">${esc(new Date(n.updatedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</span></button>`;
   }).join('')}</div>`;
   if (!list.length) html += '<div class="empty" style="padding-top:20px">No notes yet. Tap “New note” to start writing.</div>';
   else if (!shown.length) html += '<div class="empty">No notes match.</div>';
@@ -1301,7 +1499,7 @@ function areaView(a) {
   const overdue = openAll.filter(isOverdue).length;
   let html = `<div class="narrow">
     <div class="hdr ahdr" style="--ac:${a.color}"><div><div class="sub">${openAll.length} open${overdue ? ` · <span class="or">${overdue} overdue</span>` : ''} · ${ps.length} open ${ps.length === 1 ? 'project' : 'projects'}${psDone.length ? ` · ${psDone.length} completed` : ''}</div><h1 class="area-h">${adot(a)}${esc(a.name)}</h1></div></div>
-    ${LIST_AREAS.includes(a.id) ? `<div class="add3"><button class="pill" data-act="focus" data-f="area-new">+ Task</button><button class="pill" data-act="focus" data-f="proj-new">+ Project</button><button class="pill" data-act="new-list" data-area="${a.id}">+ To-do list</button><button class="pill" data-act="new-list" data-area="${a.id}" data-kind="habit">+ Habit tracker</button></div>` : ''}`;
+    ${LIST_AREAS.includes(a.id) ? `<div class="add3"><button class="pill" data-act="focus" data-f="area-new">+ Task</button><button class="pill" data-act="focus" data-f="proj-new">+ Project</button><button class="pill" data-act="new-list" data-area="${a.id}">+ To-do list</button><button class="pill" data-act="new-list" data-area="${a.id}" data-kind="habit">+ Habit tracker</button></div>${personalStatsHTML(a.id)}` : ''}`;
   html += sec('Projects', `<div class="plist">${ps.map(pcardHTML).join('')}</div>
     <div class="card" style="padding:0 6px 0 14px;margin-top:${ps.length ? 10 : 0}px">${addForm('proj', 'New project in ' + a.name, { id: 'proj-new' })}</div>
     ${ps.length || psDone.length ? '' : '<p class="mut" style="font-size:12px;margin:8px 2px 0">A project keeps one goal’s tasks together, split into stages if you like.</p>'}
@@ -1696,7 +1894,7 @@ function renderSheet() {
   else if (s.type === 'image') inner = imageSheet(s);
   else if (s.type === 'list') { const l = db.lists[s.id]; if (!l || l.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = listSheet(l); }
   const sc = $('.sheet', root); const top = sc ? sc.scrollTop : 0;
-  if (s.type === 'note') { const nb = $('#n-body', root); const nt = nb ? nb.scrollTop : 0; root.innerHTML = inner; growNote(); bindInk(); const b2 = $('#n-body', root); if (b2) { b2.scrollTop = nt; drawInkView(); } return; }
+  if (s.type === 'note') { const nb = $('#n-body', root); const nt = nb ? nb.scrollTop : 0; root.innerHTML = inner; growNote(); bindInk(); try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch { } const b2 = $('#n-body', root); if (b2) { b2.scrollTop = nt; drawInkView(); } return; }
   root.innerHTML = `<div class="sheet-bg" data-act="close-sheet"></div><div class="sheet" role="dialog" aria-modal="true" aria-label="${s.type}">${inner}</div>`;
   const nsc = $('.sheet', root); if (nsc) nsc.scrollTop = top;
   autoGrow(); hydrateImgs(root);
@@ -1741,12 +1939,13 @@ function noteMeta(n) {
 /* a full page for writing: title on top, then as much text as you like */
 function noteSheet(n) {
   if (hasInk(n)) return inkSheet(n);
-  return `<div class="writer" role="dialog" aria-label="Note">
+  return `<div class="writer" role="dialog" aria-label="Note" style="--npage:${noteColor(n)}">
     <div class="bar"><button class="ib" data-act="close-sheet" aria-label="Back">${I.l}</button><span class="meta" id="n-meta">${noteMeta(n)}</span><button class="ib" data-act="del-note" aria-label="Delete note">${I.trash}</button></div>
+    ${noteToolsHTML(n)}
     <div class="body" id="n-body">
       <textarea id="n-title" class="wt" rows="1" dir="auto" placeholder="Title" aria-label="Title">${esc(n.title || '')}</textarea>
       <div class="rule"></div>
-      <textarea id="n-text" class="wb" dir="auto" placeholder="Start writing…" aria-label="Note">${esc(n.text || '')}</textarea>
+      <div id="n-rich" class="wb rich" contenteditable="true" dir="auto" role="textbox" aria-multiline="true" aria-label="Note" data-ph="Start writing…">${richForEditor(n)}</div>
     </div></div>`;
 }
 function growNote() { ['n-title', 'n-text'].forEach(id => { const el = document.getElementById(id); if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; } }); }
@@ -1874,17 +2073,29 @@ document.addEventListener('click', e => {
     }
     case 'focus': { const f = document.getElementById(el.dataset.f); if (f) { f.scrollIntoView({ block: 'center', behavior: 'smooth' }); setTimeout(() => f.focus(), 250); } break; }
     case 'new-list': { const l = newList(el.dataset.area || 'personal', el.dataset.kind || 'list'); openSheet({ type: 'list', id: l.id }); setTimeout(() => { const i = $('#l-name'); if (i) i.focus(); }, 80); break; }
-    case 'habit-tick': { const l = db.lists[el.dataset.id]; if (!l) break; const k = el.dataset.k; const v = { ...hVals(l, k) }; if (v[el.dataset.item]) delete v[el.dataset.item]; else v[el.dataset.item] = true; updList(l, { vals: { ...(l.vals || {}), [k]: v } }); renderMain(); break; }
-    case 'habit-type': { const l = db.lists[el.dataset.id]; if (!l) break; updList(l, { items: l.items.map(x => x.id === el.dataset.item ? { ...x, type: x.type === 'num' ? 'check' : 'num' } : x) }); renderSheet(); renderMain(); break; }
-    case 'habit-day': { const l = db.lists[el.dataset.id]; if (!l) break; const rep = l.repeat || 'daily', cur = periodKey(rep); ui.hDay = ui.hDay || {}; let k = ui.hDay[l.id] || cur; if (+el.dataset.dir < 0) k = prevPeriod(rep, k); else { let x = cur, nx = null; for (let i = 0; i < 400 && x > k; i++) { nx = x; x = prevPeriod(rep, x); } k = nx || cur; } ui.hDay[l.id] = k >= cur ? null : k; renderMain(); break; }
-    case 'habit-goto': { ui.hDay = ui.hDay || {}; const l = db.lists[el.dataset.id]; if (l) { ui.hDay[l.id] = el.dataset.k === periodKey(l.repeat || 'daily') ? null : el.dataset.k; renderMain(); } break; }
-    case 'habit-more': { ui.hMore = ui.hMore || {}; ui.hMore[el.dataset.id] = !ui.hMore[el.dataset.id]; renderMain(); break; }
+    case 'hcell': {
+      const l = db.lists[el.dataset.id]; if (!l) break; const d = el.dataset.d;
+      if (l.htype === 'num') { ui.hSel = ui.hSel || {}; ui.hSel[l.id] = d; renderMain(); setTimeout(() => { const i = document.getElementById('hn-' + l.id); if (i) i.focus(); }, 30); break; }
+      const v = hv(l, d), vals = { ...(l.vals || {}) };
+      if (v === true) vals[d] = false; else if (v === false) delete vals[d]; else vals[d] = true;
+      updList(l, { vals }); renderMain(); break;
+    }
+    case 'hmonth': { const l = db.lists[el.dataset.id]; if (!l) break; ui.hMonth = ui.hMonth || {}; const m = monthAdd(ui.hMonth[l.id] || today().slice(0, 7), +el.dataset.dir); ui.hMonth[l.id] = m >= today().slice(0, 7) ? null : m; renderMain(); break; }
+    case 'hclear': { const l = db.lists[el.dataset.id]; if (!l) break; const vals = { ...(l.vals || {}) }; delete vals[el.dataset.d]; updList(l, { vals }); renderMain(); break; }
+    case 'htype': { const l = db.lists[el.dataset.id]; if (!l) break; const v = el.dataset.v;
+      /* keep what was recorded where it still makes sense */
+      const vals = {}; Object.entries(l.vals || {}).forEach(([k, x]) => { if (v === 'num' ? typeof x === 'number' : typeof x === 'boolean') vals[k] = x; });
+      if (Object.keys(l.vals || {}).length && Object.keys(vals).length < Object.keys(l.vals || {}).length && !confirm('Days recorded with the other type will be cleared. Switch?')) break;
+      updList(l, { htype: v, vals }); renderSheet(); renderMain(); break; }
+    case 'nfmt': { const f = el.dataset.fmt; if (f === 'h1' || f === 'h2' || f === 'p') richBlock(f); else richWeight(f); richToolsState(); break; }
+    case 'ncolors': ui.nColors = !ui.nColors; renderSheet(); break;
+    case 'ncolor': { const n = ui.sheet && db.notes[ui.sheet.id]; if (n) { n.color = el.dataset.v === NOTE_COLORS[0][0] ? null : el.dataset.v; n.updatedAt = now(); save(); ui.nColors = false; renderSheet(); } break; }
     case 'list-edit': if (db.lists[el.dataset.id]) openSheet({ type: 'list', id: el.dataset.id }); break;
     case 'list-tick': { const l = db.lists[el.dataset.id]; if (!l) break; const k = periodKey(l.repeat); const cur = new Set(listChecks(l, k)); const it = el.dataset.item; cur.has(it) ? cur.delete(it) : cur.add(it); updList(l, { checks: { ...(l.checks || {}), [k]: [...cur] } }); renderMain(); break; }
     case 'list-rep': { const l = db.lists[el.dataset.id]; if (l) { updList(l, { repeat: el.dataset.v }); renderSheet(); renderMain(); } break; }
     case 'list-up': { const l = db.lists[el.dataset.id]; const i = +el.dataset.i; if (l && i > 0) { const it = [...l.items]; [it[i - 1], it[i]] = [it[i], it[i - 1]]; updList(l, { items: it }); renderSheet(); renderMain(); } break; }
     case 'list-item-del': { const l = db.lists[el.dataset.id]; if (l) { updList(l, { items: l.items.filter(x => x.id !== el.dataset.item) }); renderSheet(); renderMain(); } break; }
-    case 'list-del': { const l = db.lists[el.dataset.id]; if (l && (!l.items.length || confirm(`Delete “${l.name || 'this list'}” and its history?`))) { updList(l, { deleted: true }); closeSheet(); toast('List deleted'); } break; }
+    case 'list-del': { const l = db.lists[el.dataset.id]; if (l && ((!l.items.length && !Object.keys(l.vals || {}).length) || confirm(`Delete “${l.name || 'this list'}” and its history?`))) { updList(l, { deleted: true }); closeSheet(); toast('List deleted'); } break; }
     case 'qa-go': { const i = document.getElementById(el.dataset.for); if (i) submitQA(i); break; }
   }
 });
@@ -1915,7 +2126,7 @@ document.addEventListener('keydown', e => {
   if (el.classList.contains('hnum')) { e.preventDefault(); el.blur(); return; }
   const k = el.dataset && el.dataset.enter;
   if (el.id === 't-title' || el.id === 'ev-title') { e.preventDefault(); el.blur(); return; }
-  if (el.id === 'n-title') { e.preventDefault(); const b = $('#n-text'); if (b) b.focus(); return; }
+  if (el.id === 'n-title') { e.preventDefault(); const b = $('#n-text') || $('#n-rich'); if (b) b.focus(); return; }
   if (!k) return;
   e.preventDefault();
   const v = el.value.trim(); const t = curTask();
@@ -1953,6 +2164,8 @@ document.addEventListener('input', e => {
   if (el.classList.contains('title-in') && el.tagName === 'TEXTAREA') { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
   if (t && el.id === 't-title') { t.title = el.value; t.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(save, 600); return; }
   if (el.classList && el.classList.contains('hunit')) { const l = db.lists[el.dataset.lid]; if (l) { l.items = l.items.map(x => x.id === el.dataset.item ? { ...x, unit: el.value } : x); l.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(() => { save(); renderMain(); }, 500); } return; }
+  if (el.id === 'h-unit') { const l = db.lists[el.dataset.lid]; if (l) { l.unit = el.value; l.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(() => { save(); renderMain(); }, 500); } return; }
+  if (el.id === 'n-rich') { richEnsureBlock(); richSave(); return; }
   if (el.id === 'l-name' && ui.sheet && ui.sheet.type === 'list') { const l = db.lists[ui.sheet.id]; if (l) { l.name = el.value; l.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(() => { save(); renderMain(); }, 500); } return; }
   if (el.id === 'note-q') { ui.nq = el.value; const pos = el.selectionStart; renderMain(); const q = $('#note-q'); if (q) { q.focus(); try { q.setSelectionRange(pos, pos); } catch { } } return; }
   if ((el.id === 'n-text' || el.id === 'n-title') && ui.sheet && ui.sheet.type === 'note') {
@@ -1981,9 +2194,9 @@ document.addEventListener('change', e => {
   if (he.classList && he.classList.contains('hnum')) {
     const l = db.lists[he.dataset.lid]; if (!l) return;
     const raw = he.value.replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/[٫,]/g, '.').trim();
-    const v = { ...hVals(l, he.dataset.k) };
-    if (raw === '') delete v[he.dataset.item]; else { const n = parseFloat(raw); if (isNaN(n)) { toast('Type a number'); return; } v[he.dataset.item] = n; }
-    updList(l, { vals: { ...(l.vals || {}), [he.dataset.k]: v } }); renderMain(); return;
+    const vals = { ...(l.vals || {}) };
+    if (raw === '') delete vals[he.dataset.k]; else { const n = parseFloat(raw); if (isNaN(n)) { toast('Type a number'); return; } vals[he.dataset.k] = n; }
+    updList(l, { vals }); renderMain(); return;
   }
   const el = e.target; const t = curTask();
   if (t) {
