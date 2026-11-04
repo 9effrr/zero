@@ -788,8 +788,10 @@ function projStats(p) {
 }
 function pcardHTML(p) {
   const s = projStats(p); const a = areaOf(p.areaId);
-  return `<button class="card pcard ${p.done ? 'pdone' : ''}" data-act="open-project" data-id="${esc(p.id)}" style="${a ? '--ac:' + a.color : ''}">
+  const pr = p.done ? 0 : (p.priority || 0);
+  return `<button class="card pcard ${p.done ? 'pdone' : ''} prio-${pr}" data-act="open-project" data-id="${esc(p.id)}" style="${a ? '--ac:' + a.color : ''}">${pr ? `<span class="pbadge">${pr === 2 ? 'Top priority' : 'Important'}</span>` : ''}
     <span style="display:flex;justify-content:space-between;gap:10px;align-items:baseline"><span class="nm" dir="auto">${p.done ? `<span class="pdk">${I.check}</span>` : ''}${esc(p.name)}</span><span class="mut" style="font-size:12px;white-space:nowrap">${p.done ? 'Completed ' + esc(shortDay(isoDay(p.doneAt || new Date().toISOString()))) : p.deadline ? 'Due ' + esc(shortDay(p.deadline)) : ''}</span></span>
+    ${p.brief ? `<span class="pcbrief" dir="auto">${esc(p.brief)}</span>` : ''}
     <span class="prog"><i style="width:${s.pct}%"></i></span>
     <span class="mut" style="font-size:12px">${s.done} of ${s.total} done${s.overdue ? ` · <span class="or">${s.overdue} overdue</span>` : ''}${(p.stages || []).length ? ' · ' + p.stages.length + ' stages' : ''}</span></button>`;
 }
@@ -860,6 +862,7 @@ function renderMain() {
   }
   if (keep) { const el = document.getElementById(keep.id); if (el) { el.value = keep.v; el.focus(); try { el.setSelectionRange(keep.s, keep.e); } catch { } } }
   if (ui.view === 'notes') drawThumbs();
+  document.querySelectorAll('.pbrief').forEach(el => { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; });
 }
 function softRender() {
   const a = document.activeElement;
@@ -986,46 +989,213 @@ function hLast(l) {
   const ks = Object.keys(l.vals || {}).filter(k => typeof l.vals[k] === 'number' && k <= today()).sort();
   return ks.length ? { d: ks[ks.length - 1], v: l.vals[ks[ks.length - 1]], prev: ks.length > 1 ? l.vals[ks[ks.length - 2]] : null } : null;
 }
-function habitCardHTML(l) {
-  const td = today(), m = (ui.hMonth && ui.hMonth[l.id]) || td.slice(0, 7);
-  const first = pd(m + '-01'), lead = first.getDay();
+/* achievement cards for the section: habits and repeating tasks */
+/* ---------- charts used across the app ---------- */
+function donutSVG(parts, size = 84, w = 10) {
+  /* parts: [[fraction, colour], …] drawn clockwise from the top over a dim track */
+  const r = (size - w) / 2, c = 2 * Math.PI * r, cx = size / 2;
+  let off = 0, segs = '';
+  parts.forEach(([f, col]) => {
+    const len = Math.max(0, Math.min(1, f)) * c; if (len <= 0.01) return;
+    segs += `<circle cx="${cx}" cy="${cx}" r="${r}" fill="none" stroke="${col}" stroke-width="${w}" stroke-dasharray="${len.toFixed(2)} ${(c - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 ${cx} ${cx})" stroke-linecap="${parts.length === 1 ? 'round' : 'butt'}"/>`;
+    off += len;
+  });
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true"><circle cx="${cx}" cy="${cx}" r="${r}" fill="none" stroke="var(--s2)" stroke-width="${w}"/>${segs}</svg>`;
+}
+const vDonut = (k, pct, center, sub, col = 'var(--sand)') => `<div class="viz vd"><div class="dw">${donutSVG([[pct, col]])}<b>${center}</b></div><div class="vt"><span class="k">${k}</span><span class="s">${sub}</span></div></div>`;
+const vBar = (k, v, frac, sub, col = 'var(--sand)') => `<div class="viz vb"><span class="k">${k}</span><span class="v">${v}</span><span class="pbar"><i style="width:${Math.round(Math.max(0, Math.min(1, frac)) * 100)}%;background:${col}"></i></span><span class="s">${sub}</span></div>`;
+
+/* ---------- habits: a clean calendar outside, editing inside ---------- */
+function habitGrid(l, m, editable) {
+  const td = today(), first = pd(m + '-01'), lead = first.getDay();
   const dim = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
   const total = Math.ceil((lead + dim) / 7) * 7, start = addD(m + '-01', -lead);
-  const isNum = l.htype === 'num';
-  const sel = (ui.hSel && ui.hSel[l.id]) || td;
+  const isNum = l.htype === 'num', sel = ui.hSel && ui.hSel[l.id];
   let cells = '';
   for (let i = 0; i < total; i++) {
     const d = addD(start, i), out = d.slice(0, 7) !== m, fut = d > td, v = hv(l, d);
     const mark = isNum ? (typeof v === 'number' ? `<b>${fmtNum(v)}</b>` : '') : v === true ? `<i class="hy">${I.check}</i>` : v === false ? `<i class="hn">${I.x}</i>` : '';
-    const cls = [out ? 'out' : '', d === td ? 'today' : '', isNum && d === sel ? 'sel' : '', v === true ? 'yes' : v === false ? 'no' : typeof v === 'number' ? 'val' : ''].join(' ');
-    cells += `<button class="hc ${cls}" data-act="hcell" data-id="${esc(l.id)}" data-d="${d}" ${fut || out ? 'disabled' : ''} aria-label="${esc(fmtDay(d))}${v === true ? ', done' : v === false ? ', not done' : typeof v === 'number' ? ', ' + fmtNum(v) : ''}"><span class="dn">${pd(d).getDate()}</span>${mark}</button>`;
+    const cls = `hc ${out ? 'out' : ''} ${d === td ? 'today' : ''} ${editable && d === sel ? 'sel' : ''} ${v === true ? 'yes' : v === false ? 'no' : typeof v === 'number' ? 'val' : ''} ${fut && !out ? 'fut' : ''}`;
+    const inner = `<span class="dn">${pd(d).getDate()}</span>${out ? '' : mark}`;
+    cells += editable && !out && !fut
+      ? `<button class="${cls}" data-act="hpick" data-id="${esc(l.id)}" data-d="${d}" aria-label="${esc(fmtDay(d))}">${inner}</button>`
+      : `<span class="${cls}">${inner}</span>`;
   }
-  const st = hMonth(l, m);
-  let meta, foot = '';
-  if (isNum) {
-    const last = hLast(l);
-    meta = last ? `<b>${fmtNum(last.v)}</b>${esc(l.unit ? ' ' + l.unit : '')}${last.prev !== null ? ` <em class="${last.v > last.prev ? 'up' : last.v < last.prev ? 'down' : ''}">${last.v > last.prev ? '+' : ''}${fmtNum(last.v - last.prev)}</em>` : ''}` : '<span class="mut">no entries yet</span>';
-    const sv = hv(l, sel);
-    foot = `<div class="hedit"><span class="hd">${sel === td ? 'Today' : esc(fmtDay(sel))}</span><input class="hnum" id="hn-${esc(l.id)}" data-lid="${esc(l.id)}" data-k="${sel}" inputmode="decimal" enterkeyhint="done" value="${typeof sv === 'number' ? String(Math.round(sv * 100) / 100) : ''}" placeholder="${hLast(l) ? fmtNum(hLast(l).v) : '0'}" aria-label="${esc(l.name || 'Value')} for ${esc(fmtDay(sel))}"><span class="hu">${esc(l.unit || '')}</span>${typeof sv === 'number' ? `<button class="pill" data-act="hclear" data-id="${esc(l.id)}" data-d="${sel}">Clear</button>` : ''}</div>`;
-    if (st.nums.length) {
-      const avg = st.nums.reduce((a, b) => a + b, 0) / st.nums.length;
-      foot += `<div class="htrend">${sparkSVG(st.nums, 130, 32)}<span class="hv"><small>this month</small><span>avg <b>${fmtNum(avg)}</b></span><small>${fmtNum(Math.min(...st.nums))} – ${fmtNum(Math.max(...st.nums))}</small></span></div>`;
-    }
-  } else {
-    const s = hStreak(l);
-    meta = `<span class="cy">✓ ${st.yes}</span><span class="cn">✗ ${st.no}</span>${s ? `<span class="cs">${s} ${s === 1 ? 'day' : 'days'} in a row</span>` : ''}`;
-  }
-  const mName = first.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
-  return `<div class="card hcard ${isNum ? 'hk-num' : 'hk-yn'}">
-    <div class="lh"><button class="lname" data-act="list-edit" data-id="${esc(l.id)}" dir="auto">${esc(l.name || 'Untitled habit')}</button><button class="ib" data-act="list-edit" data-id="${esc(l.id)}" aria-label="Edit habit">${I.gear}</button></div>
-    <div class="hmeta">${meta}</div>
-    <div class="hnav"><button class="ib" data-act="hmonth" data-id="${esc(l.id)}" data-dir="-1" aria-label="Previous month">${I.l}</button><span>${esc(mName)}</span><button class="ib" data-act="hmonth" data-id="${esc(l.id)}" data-dir="1" aria-label="Next month" ${m >= td.slice(0, 7) ? 'disabled style="opacity:.3"' : ''}>${I.r}</button></div>
-    <div class="hwd">${['S', 'M', 'T', 'W', 'T', 'F', 'S'].map(w => `<span>${w}</span>`).join('')}</div>
-    <div class="hgrid">${cells}</div>
-    ${isNum ? foot : '<p class="hhint">Tap a day: ✓ done · tap again: ✗ not done · again to clear</p>'}
-  </div>`;
+  return `<div class="hwd">${['S', 'M', 'T', 'W', 'T', 'F', 'S'].map(w => `<span>${w}</span>`).join('')}</div><div class="hgrid">${cells}</div>`;
 }
-/* achievement cards for the section: habits and repeating tasks */
+function habitCardHTML(l) {
+  const m = today().slice(0, 7);
+  return `<button class="card hcard ${l.htype === 'num' ? 'hk-num' : 'hk-yn'}" data-act="hopen" data-id="${esc(l.id)}" aria-label="Open ${esc(l.name || 'habit')}">
+    <span class="hname"><span dir="auto">${esc(l.name || 'Untitled habit')}</span><small>${l.htype === 'num' ? (l.unit ? esc(l.unit) : '123') : '✓ / ✗'}</small></span>
+    <span class="hmon">${esc(pd(m + '-01').toLocaleDateString('en-GB', { month: 'long' }))}</span>
+    ${habitGrid(l, m, false)}
+  </button>`;
+}
+function habitSheet(l) {
+  const td = today(), m = (ui.hMonth && ui.hMonth[l.id]) || td.slice(0, 7);
+  const sel = ui.hSel && ui.hSel[l.id], v = sel ? hv(l, sel) : undefined;
+  const picker = !sel ? '<p class="hhint">Tap a day to fill it in</p>' : l.htype === 'num'
+    ? `<div class="hpick"><span class="hd">${sel === td ? 'Today' : esc(fmtDay(sel))}</span><input id="hp-num" class="tin" inputmode="decimal" enterkeyhint="done" value="${typeof v === 'number' ? String(Math.round(v * 100) / 100) : ''}" placeholder="${hLast(l) ? fmtNum(hLast(l).v) : '0'}" aria-label="Value"><span class="hu">${esc(l.unit || '')}</span><button class="btn pri" data-act="hsave" data-id="${esc(l.id)}">Save</button>${typeof v === 'number' ? `<button class="pill" data-act="hset" data-id="${esc(l.id)}" data-v="">Clear</button>` : ''}</div>`
+    : `<div class="hpick"><span class="hd">${sel === td ? 'Today' : esc(fmtDay(sel))}</span><div class="hchoice"><button class="ok ${v === true ? 'on' : ''}" data-act="hset" data-id="${esc(l.id)}" data-v="1"><i class="hy">${I.check}</i>Done</button><button class="no ${v === false ? 'on' : ''}" data-act="hset" data-id="${esc(l.id)}" data-v="0"><i class="hn">${I.x}</i>Not done</button>${v !== undefined ? `<button class="clr" data-act="hset" data-id="${esc(l.id)}" data-v="">Clear</button>` : ''}</div></div>`;
+  const n = Object.keys(l.vals || {}).length;
+  return `
+  <div class="sheet-top"><button class="ib" data-act="close-sheet" aria-label="Close">${I.l}</button><span class="crumb">Habit</span><button class="ib" data-act="list-del" data-id="${esc(l.id)}" aria-label="Delete habit">${I.trash}</button></div>
+  <textarea id="l-name" class="title-in" rows="1" dir="auto" placeholder="Habit, e.g. الوزن or رياضة">${esc(l.name || '')}</textarea>
+  <div class="card hsheet">
+    <div class="hnav"><button class="ib" data-act="hmonth" data-id="${esc(l.id)}" data-dir="-1" aria-label="Previous month">${I.l}</button><span>${esc(pd(m + '-01').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }))}</span><button class="ib" data-act="hmonth" data-id="${esc(l.id)}" data-dir="1" aria-label="Next month" ${m >= td.slice(0, 7) ? 'disabled style="opacity:.3"' : ''}>${I.r}</button></div>
+    ${habitGrid(l, m, true)}
+    ${picker}
+  </div>
+  ${sec('Type', `<div class="htypes">
+    <button class="htypeb ${l.htype !== 'num' ? 'on' : ''}" data-act="htype" data-id="${esc(l.id)}" data-v="yn"><span class="ic"><i class="hy">${I.check}</i><i class="hn">${I.x}</i></span><b>Did it / didn’t</b><small>Choose ✓ or ✗ for each day</small></button>
+    <button class="htypeb ${l.htype === 'num' ? 'on' : ''}" data-act="htype" data-id="${esc(l.id)}" data-v="num"><span class="ic num">123</span><b>Number</b><small>Type a value each day, like weight</small></button>
+  </div>
+  ${l.htype === 'num' ? `<div class="card" style="margin-top:10px"><div class="field"><label for="h-unit">Unit</label><input id="h-unit" class="tin" data-lid="${esc(l.id)}" dir="auto" placeholder="kg, steps, OMR…" value="${esc(l.unit || '')}" style="max-width:160px;text-align:end"></div></div>` : ''}
+  ${n ? `<p class="mut" style="font-size:12px;margin:10px 2px 0">${n} ${n === 1 ? 'day' : 'days'} recorded.</p>` : ''}`)}`;
+}
+/* one card per habit, up with the rest of the Personal stats */
+function habitStatsHTML(aid) {
+  const hs = lists(aid, 'habit'); if (!hs.length) return '';
+  const m = today().slice(0, 7);
+  return `<div class="hstatgrid">${hs.map(l => {
+    if (l.htype === 'num') {
+      const last = hLast(l);
+      const pts = []; for (let i = 29; i >= 0; i--) { const x = hv(l, addD(today(), -i)); if (typeof x === 'number') pts.push(x); }
+      const d = last && last.prev !== null ? last.v - last.prev : null;
+      return `<button class="card hstat" data-act="hopen" data-id="${esc(l.id)}"><span class="k" dir="auto">${esc(l.name || 'Habit')}</span>
+        <span class="v">${last ? fmtNum(last.v) : '—'}<small>${esc(l.unit || '')}</small>${d !== null ? `<em class="${d > 0 ? 'up' : d < 0 ? 'down' : ''}">${d > 0 ? '+' : ''}${fmtNum(d)}</em>` : ''}</span>
+        ${pts.length > 1 ? sparkSVG(pts, 150, 30) : '<span class="s">last 30 days</span>'}
+        <span class="s">${pts.length ? `${fmtNum(Math.min(...pts))} – ${fmtNum(Math.max(...pts))} · ${pts.length} entries` : 'no entries yet'}</span></button>`;
+    }
+    const s = hMonth(l, m), st = hStreak(l), pct = s.days ? s.yes / s.days : 0;
+    return `<button class="card hstat" data-act="hopen" data-id="${esc(l.id)}"><span class="k" dir="auto">${esc(l.name || 'Habit')}</span>
+      <span class="hsrow"><span class="dw sm">${donutSVG([[s.days ? s.yes / s.days : 0, 'var(--green)'], [s.days ? s.no / s.days : 0, 'var(--red)']], 58, 8)}<b>${Math.round(pct * 100)}%</b></span>
+      <span class="hsn"><span><i class="g"></i>${s.yes} done</span><span><i class="r"></i>${s.no} missed</span><span class="st">${st ? `${st} ${st === 1 ? 'day' : 'days'} in a row` : 'no streak yet'}</span></span></span></button>`;
+  }).join('')}</div>`;
+}
+
+/* ---------- projects: importance, brief, timeline ---------- */
+const PRIO = [[0, 'Normal'], [1, 'Important'], [2, 'Top priority']];
+function timelineHTML(p, ts) {
+  const td = today(), stages = p.stages || [];
+  const created = isoDay(p.createdAt || new Date().toISOString());
+  let rows = [], prevEnd = null;
+  stages.forEach(st => {
+    const list = ts.filter(t => t.stageId === st.id);
+    const ds = list.map(t => t.due).filter(Boolean).sort();
+    const fc = list.map(t => t.createdAt && isoDay(t.createdAt)).filter(Boolean).sort()[0];
+    let start = st.start || prevEnd || fc || created;
+    let end = st.due || ds[ds.length - 1] || addD(start, 6);
+    if (end < start) start = end;
+    rows.push({ name: st.name || 'Stage', start, end, done: list.filter(t => t.done).length, total: list.length, tasks: list });
+    prevEnd = end;
+  });
+  if (!stages.length) rows = ts.filter(t => t.due).sort(byDue).slice(0, 8).map(t => ({ name: t.title, start: t.due, end: t.due, done: t.done ? 1 : 0, total: 1, tasks: [t] }));
+  if (!rows.length) return `<div class="tl-empty">Add stages with dates, or give tasks a due date, to see this project's timeline here.</div>`;
+  let min = rows.reduce((a, r) => r.start < a ? r.start : a, rows[0].start), max = rows.reduce((a, r) => r.end > a ? r.end : a, rows[0].end);
+  if (p.deadline && p.deadline > max) max = p.deadline;
+  if (td > min && td < addD(max, 14) && td > max) max = td;
+  min = addD(min, -1); max = addD(max, 1);
+  const span = Math.max(1, diffD(min, max) + 1), at = d => (diffD(min, d) / span) * 100;
+  const n = Math.min(8, Math.max(3, Math.round(span / 4)));
+  const ticks = []; for (let i = 0; i < n; i++) ticks.push(addD(min, Math.round((span - 1) * i / (n - 1))));
+  const fmtT = d => pd(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  const bars = rows.map(r => {
+    const left = at(r.start), w = Math.max(at(addD(r.end, 1)) - left, 100 / span);
+    r.l = left; r.w = w;
+    const cur = r.start <= td && td <= r.end, fin = r.total && r.done === r.total, late = !fin && r.end < td;
+    return `<div class="tl-row"><div class="tl-bar ${cur ? 'cur' : ''} ${fin ? 'fin' : ''} ${late ? 'late' : ''}" style="left:${left.toFixed(2)}%;width:${w.toFixed(2)}%;--f:${r.total ? Math.round(r.done / r.total * 100) : 0}%" title="${esc(r.name)} · ${esc(fmtT(r.start))} – ${esc(fmtT(r.end))}"><span dir="auto">${esc(r.name)}</span>${r.total > 1 || stages.length ? `<small>${r.done}/${r.total}</small>` : ''}</div></div>`;
+  }).join('');
+  /* what is in each stage, under its start like the reference: a few tasks as bullets */
+  const notes = stages.length ? `<div class="tl-notes">${rows.map(r => `<div class="tl-col" style="left:${r.l.toFixed(2)}%;width:${Math.max(r.w, 14).toFixed(2)}%">${r.tasks.slice(0, 4).map(t => `<span class="${t.done ? 'd' : ''}" dir="auto">${esc(t.title)}</span>`).join('')}${r.tasks.length > 4 ? `<span class="m">+${r.tasks.length - 4} more</span>` : ''}</div>`).join('')}</div>` : '';
+  return `<div class="tl-wrap"><div class="tl" style="--rows:${rows.length}">
+    <div class="tl-grid">${ticks.map(d => `<i style="left:${at(d).toFixed(2)}%"></i>`).join('')}</div>
+    ${td >= min && td <= max ? `<div class="tl-today" style="left:${at(td).toFixed(2)}%"><span>Today</span></div>` : ''}
+    ${p.deadline && p.deadline >= min && p.deadline <= max ? `<div class="tl-dl" style="left:${at(addD(p.deadline, 1)).toFixed(2)}%"><span>Deadline</span></div>` : ''}
+    <div class="tl-rows">${bars}</div>
+    <div class="tl-ticks">${ticks.map(d => `<span style="left:${at(d).toFixed(2)}%">${esc(fmtT(d))}</span>`).join('')}</div>
+    ${notes}
+  </div></div>`;
+}
+function reviewNumbersHTML(r) {
+  const frac = (a, b) => b ? a / b : 0;
+  const pct = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
+  const avg = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
+  const WD = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const busiest = r.done.length ? r.wk.indexOf(Math.max(...r.wk)) : -1;
+  const lead = avg(r.lead);
+  const repOk = r.rep.filter(l => !l.late).length;
+  /* rates as rings */
+  const rings = `<div class="vgrid g3">
+    ${vDonut('Completion', frac(r.plannedDone, r.planned), pct(r.plannedDone, r.planned), r.planned ? `${r.plannedDone} of ${r.planned} due in range` : 'nothing due in range', 'var(--sand)')}
+    ${vDonut('On time', frac(r.onTime, r.withDue.length), pct(r.onTime, r.withDue.length), r.withDue.length ? `${r.onTime} of ${r.withDue.length} dated tasks` : 'no dated tasks done', 'var(--green)')}
+    ${vDonut('Repeats on time', frac(repOk, r.rep.length), pct(repOk, r.rep.length), r.rep.length ? `${repOk} of ${r.rep.length} repeats` : 'no repeats done', 'var(--blue)')}
+  </div>`;
+  /* activity: which days had something done */
+  const dayStrip = []; for (let d = r.days > 42 ? addD(r.to, -41) : r.from; d <= r.to; d = addD(d, 1)) dayStrip.push(d);
+  const streakStrip = []; for (let i = 13; i >= 0; i--) streakStrip.push(addD(today(), -i));
+  const perMax = Math.max(1, ...dayStrip.map(d => r.perDay[d] || 0));
+  const activity = `<div class="vgrid g2">
+    <div class="viz"><span class="k">Active days</span><span class="v">${r.activeDays}<small>/${r.days}</small></span>
+      <span class="dstrip">${dayStrip.map(d => `<i class="${r.perDay[d] ? 'on' : ''}" style="opacity:${r.perDay[d] ? (0.45 + 0.55 * (r.perDay[d] / perMax)).toFixed(2) : 1}" title="${esc(shortDay(d))}: ${r.perDay[d] || 0}"></i>`).join('')}</span>
+      <span class="s">${pct(r.activeDays, r.days)} of days had something done</span></div>
+    <div class="viz"><span class="k">Streak</span><span class="v">${r.streak}<small>${r.streak === 1 ? ' day' : ' days'}</small></span>
+      <span class="dstrip s14">${streakStrip.map(d => `<i class="${r.doneDays.has(d) ? 'on' : ''} ${d === today() ? 'now' : ''}" title="${esc(shortDay(d))}"></i>`).join('')}</span>
+      <span class="s">last 14 days · ${r.streak >= 3 ? 'keep it going' : 'one done task a day builds it'}</span></div>
+  </div>`;
+  /* flow: created vs done, per day */
+  const cmax = Math.max(1, r.created.length, r.done.length);
+  const flow = `<div class="vgrid g2">
+    <div class="viz"><span class="k">Created vs done</span>
+      <span class="cmp"><span>Created</span><span class="pbar"><i style="width:${Math.round(r.created.length / cmax * 100)}%;background:var(--blue)"></i></span><b>${r.created.length}</b></span>
+      <span class="cmp"><span>Done</span><span class="pbar"><i style="width:${Math.round(r.done.length / cmax * 100)}%;background:var(--green)"></i></span><b>${r.done.length}</b></span>
+      <span class="s">${r.done.length >= r.created.length ? 'You are keeping up' : `${r.created.length - r.done.length} more added than done`}</span></div>
+    <div class="viz"><span class="k">Per day</span><span class="v">${(r.done.length / r.days).toFixed(1)}<small> avg</small></span>
+      <span class="mbars">${dayStrip.slice(-21).map(d => `<i style="height:${Math.max(8, Math.round((r.perDay[d] || 0) / perMax * 100))}%" class="${r.perDay[d] ? '' : 'z'}"></i>`).join('')}</span>
+      <span class="s">best day ${r.bestDay ? `${r.bestDay[1]} · ${esc(shortDay(r.bestDay[0]))}` : '—'}</span></div>
+  </div>`;
+  /* load: overdue, urgent, projects */
+  const openN = Math.max(1, r.open.length);
+  const P = r.projOpen + r.projDone;
+  const load = `<div class="vgrid g3">
+    ${vBar('Overdue', r.overdue.length, r.overdue.length / openN, r.overdue.length ? `${pct(r.overdue.length, r.open.length)} of open · avg ${r.overdueAge.toFixed(1)} d late` : 'nothing overdue', 'var(--orange)')}
+    ${vBar('Urgent', r.urgentOpen, r.urgentOpen / openN, `${pct(r.urgentOpen, r.open.length)} of open tasks`, 'var(--red)')}
+    <div class="viz vd"><div class="dw">${donutSVG([[frac(r.projDone, P), 'var(--green)'], [frac(r.projOpen, P), 'var(--sand)']])}<b>${P}</b></div><div class="vt"><span class="k">Projects</span><span class="s"><i class="lg" style="background:var(--sand)"></i>${r.projOpen} open<br><i class="lg" style="background:var(--green)"></i>${r.projDone} completed${r.projDoneRange ? ` · ${r.projDoneRange} in range` : ''}</span></div></div>
+  </div>`;
+  /* where the work went: done by section (or project / stage) */
+  const ent = Object.entries(r.by).filter(([, v]) => v.done + v.open);
+  const pal = ['var(--sand)', 'var(--blue)', 'var(--green)', '#B7A4D0', 'var(--orange)', 'var(--sand2)', 'var(--s3)'];
+  const colOf = (n, i) => { const a = AREAS.find(x => x.name === n); return a ? a.color : pal[i % pal.length]; };
+  const tot = ent.reduce((a, [, v]) => a + v.done, 0);
+  const split = tot ? `<div class="viz vsplit"><div class="dw big">${donutSVG(ent.map(([n, v], i) => [v.done / tot, colOf(n, i)]), 120, 14)}<b>${tot}<small>done</small></b></div>
+    <div class="vlegend">${ent.sort((a, b) => b[1].done - a[1].done).map(([n, v], i) => `<span><i style="background:${colOf(n, i)}"></i><span dir="auto">${esc(n)}</span><b>${v.done}</b><em>${pct(v.done, tot)}</em></span>`).join('')}</div></div>` : '';
+  const extra = `<div class="vgrid g3">
+    <div class="viz"><span class="k">Time to finish</span><span class="v">${lead === null ? '—' : lead < 1 ? Math.round(lead * 24) + '<small> h</small>' : lead.toFixed(1) + '<small> d</small>'}</span><span class="s">average, created → done</span></div>
+    <div class="viz"><span class="k">Busiest day</span><span class="v">${busiest >= 0 ? WD[busiest].slice(0, 3) : '—'}</span><span class="s">${busiest >= 0 ? r.wk[busiest] + ' done on ' + WD[busiest] + 's' : ''}</span></div>
+    <div class="viz"><span class="k">${r.notesN === null ? 'Postponed' : 'Notes · Postponed'}</span><span class="v">${r.notesN === null ? r.postponed.length : `${r.notesN}<small> · ${r.postponed.length}</small>`}</span><span class="s">${r.notesN === null ? 'times a date was pushed' : 'notes written · dates pushed'}</span></div>
+  </div>`;
+  /* done per day (per week for long ranges) */
+  const weekly = r.days > 45;
+  const slots = [];
+  if (weekly) { let d = r.from; while (d <= r.to) { const e = addD(d, 6); let c = 0; for (let x = d; x <= e && x <= r.to; x = addD(x, 1)) c += r.perDay[x] || 0; slots.push([d, c]); d = addD(d, 7); } }
+  else for (let d = r.from; d <= r.to; d = addD(d, 1)) slots.push([d, r.perDay[d] || 0]);
+  const mx = Math.max(1, ...slots.map(s => s[1]));
+  const every = Math.ceil(slots.length / 8);
+  const chart = `<div class="dchart">${slots.map(([d, c], i) => `<span title="${esc(shortDay(d))}: ${c}"><b>${c || ''}</b><i style="height:${Math.max(3, Math.round(c / mx * 85))}%" class="${c ? '' : 'z'} ${d === today() ? 'now' : ''}"></i><em>${i % every === 0 ? esc(weekly ? shortDay(d) : String(pd(d).getDate())) : ''}</em></span>`).join('')}</div>`;
+  const wmx = Math.max(1, ...r.wk);
+  const wchart = `<div class="wchart">${r.wk.map((c, i) => `<div><span>${WD[i].slice(0, 3)}</span><span class="t"><i style="width:${Math.round(c / wmx * 100)}%"></i></span><span class="num">${c}</span></div>`).join('')}</div>`;
+  const B = r.buckets, btot = Math.max(1, B.overdue + B.today + B.week + B.later + B.none);
+  const seg = (v, c, l) => v ? `<i style="width:${v / btot * 100}%;background:${c}" title="${l}: ${v}"></i>` : '';
+  const key = (v, c, l) => `<span><i style="background:${c}"></i>${l} <b>${v}</b></span>`;
+  const due = `<div class="stack">${seg(B.overdue, 'var(--orange)', 'Overdue')}${seg(B.today, 'var(--sand)', 'Today')}${seg(B.week, 'var(--blue)', 'Next 7 days')}${seg(B.later, 'var(--green)', 'Later')}${seg(B.none, 'var(--s3)', 'No date')}</div>
+    <div class="skey">${key(B.overdue, 'var(--orange)', 'Overdue')}${key(B.today, 'var(--sand)', 'Today')}${key(B.week, 'var(--blue)', 'Next 7 days')}${key(B.later, 'var(--green)', 'Later')}${key(B.none, 'var(--s3)', 'No date')}</div>`;
+  return sec('Rates', rings) + sec('Activity', activity + flow) + sec('Load', load)
+    + (split ? sec(r.sc.fP ? 'Done by stage' : r.sc.fA ? 'Done by project' : 'Done by section', split) : '')
+    + sec(weekly ? 'Done per week' : 'Done per day', `<div class="card chartc">${chart}</div>`)
+    + `<div class="rgrid">${sec('By weekday', `<div class="card chartc">${wchart}</div>`)}${sec('Open tasks by due date', `<div class="card chartc">${due}</div>`)}</div>`
+    + sec('More', extra);
+}
+
 function personalStatsHTML(aid) {
   const td = today(), m = td.slice(0, 7);
   const hs = lists(aid, 'habit');
@@ -1049,26 +1219,21 @@ function personalStatsHTML(aid) {
     ${card('Habits this month', days ? Math.round(yes / days * 100) + '%' : '—', yn.length ? `${yes} ✓ in ${days} habit-days` : 'no ✓/✗ habits yet', 'c-done')}
     ${card('Best streak', best && best[1] ? best[1] : '—', best && best[1] ? `<span dir="auto">${esc(best[0].name || 'Habit')}</span> · days` : 'tick a habit today to start one', 'c-open')}
     ${card('Repeating tasks', repMonth.length, repMonth.length ? `done this month · ${Math.round(onTime / repMonth.length * 100)}% on time` : 'done this month', repMonth.length && onTime < repMonth.length ? 'c-late' : 'c-ok')}
-  </div></section>`;
+  </div>${habitStatsHTML(aid)}</section>`;
+}
+function habitSaveNum(id) {
+  const l = db.lists[id], d = ui.hSel && ui.hSel[id], inp = $('#hp-num'); if (!l || !d || !inp) return;
+  const raw = inp.value.replace(/[٠-٩]/g, x => '٠١٢٣٤٥٦٧٨٩'.indexOf(x)).replace(/[٫,]/g, '.').trim();
+  const vals = { ...(l.vals || {}) };
+  if (raw === '') delete vals[d]; else { const n = parseFloat(raw); if (isNaN(n)) { toast('Type a number'); return; } vals[d] = n; }
+  updList(l, { vals }); ui.hSel[id] = null; renderSheet(); renderMain();
 }
 function habitsHTML(areaId) {
   migrateHabits();
   const ls = lists(areaId, 'habit');
   return sec('Habit trackers', `<div class="hlist">${ls.map(habitCardHTML).join('')}</div>
     ${ls.length ? '' : '<p class="mut" style="font-size:12px;margin:0 2px">Each habit gets its own calendar: green ✓ or red ✗ for things you did or didn’t do, or a number you type in, like your weight.</p>'}
-    <button class="dash" style="width:100%;margin-top:10px" data-act="new-list" data-area="${areaId}" data-kind="habit">+ New habit tracker</button>`, { right: `<span class="mut">${ls.length}</span>` });
-}
-function habitSheet(l) {
-  const n = Object.keys(l.vals || {}).length;
-  return `
-  <div class="sheet-top"><button class="ib" data-act="close-sheet" aria-label="Close">${I.l}</button><span class="crumb">Habit tracker</span><button class="ib" data-act="list-del" data-id="${esc(l.id)}" aria-label="Delete habit">${I.trash}</button></div>
-  <textarea id="l-name" class="title-in" rows="1" dir="auto" placeholder="Habit, e.g. الوزن or رياضة">${esc(l.name || '')}</textarea>
-  ${sec('Type', `<div class="htypes">
-    <button class="htypeb ${l.htype !== 'num' ? 'on' : ''}" data-act="htype" data-id="${esc(l.id)}" data-v="yn"><span class="ic"><i class="hy">${I.check}</i><i class="hn">${I.x}</i></span><b>Did it / didn’t</b><small>Green ✓ or red ✗ on each day</small></button>
-    <button class="htypeb ${l.htype === 'num' ? 'on' : ''}" data-act="htype" data-id="${esc(l.id)}" data-v="num"><span class="ic num">123</span><b>Number</b><small>Type a value each day, like weight</small></button>
-  </div>
-  ${l.htype === 'num' ? `<div class="card" style="margin-top:10px"><div class="field"><label for="h-unit">Unit</label><input id="h-unit" class="tin" data-lid="${esc(l.id)}" dir="auto" placeholder="kg, steps, OMR…" value="${esc(l.unit || '')}" style="max-width:160px;text-align:end"></div></div>` : ''}
-  ${n ? `<p class="mut" style="font-size:12px;margin:10px 2px 0">${n} ${n === 1 ? 'day' : 'days'} recorded. Switching the type keeps them.</p>` : ''}`)}`;
+    <button class="dash" style="width:100%;margin-top:10px" data-act="new-list" data-area="${areaId}" data-kind="habit">+ New habit tracker</button>`, { right: `<span class="mut">Tap one to fill it in</span>` });
 }
 /* ---------------- rich notes ----------------
    Notes keep a small HTML subset: <h1>, <h2>, <p> blocks with <b> (bold) and <span class="l"> (light) inside.
@@ -1490,7 +1655,7 @@ function allTasksHTML() {
   return html + '</section>';
 }
 function areaView(a) {
-  const allP = areaProjects(a.id), ps = allP.filter(p => !p.done), psDone = allP.filter(p => p.done);
+  const allP = areaProjects(a.id), ps = allP.filter(p => !p.done).sort((x, y) => (y.priority || 0) - (x.priority || 0)), psDone = allP.filter(p => p.done);
   const all = tasks().filter(t => taskArea(t) === a.id);
   const loose = all.filter(t => !t.projectId || !db.projects[t.projectId] || db.projects[t.projectId].deleted);
   const open = loose.filter(t => !t.done).sort(byDue);
@@ -1520,7 +1685,7 @@ function projectView(p) {
     const list = sortOpen(ts.filter(t => (st ? t.stageId === st.id : !t.stageId || !(p.stages || []).some(x => x.id === t.stageId))));
     const doneN = list.filter(t => t.done).length;
     const head = st
-      ? `<div class="stage-h"><input id="st-${esc(st.id)}" data-stage="${esc(st.id)}" dir="auto" value="${esc(st.name)}" aria-label="Stage name"><span class="mut num" style="font-size:12px;white-space:nowrap">${doneN}/${list.length}</span><input type="date" id="std-${esc(st.id)}" data-stage-due="${esc(st.id)}" value="${esc(st.due || '')}" aria-label="Stage due date" style="background:transparent;border:0;color:var(--mut);font-size:12px;color-scheme:dark;width:118px"><button class="ib" data-act="del-stage" data-sid="${esc(st.id)}" aria-label="Delete stage">${I.x}</button></div>`
+      ? `<div class="stage-h"><input id="st-${esc(st.id)}" data-stage="${esc(st.id)}" dir="auto" value="${esc(st.name)}" aria-label="Stage name"><span class="mut num" style="font-size:12px;white-space:nowrap">${doneN}/${list.length}</span><span class="sdates"><input type="date" id="sts-${esc(st.id)}" data-stage-start="${esc(st.id)}" value="${esc(st.start || '')}" aria-label="Stage start date"><span>→</span><input type="date" id="std-${esc(st.id)}" data-stage-due="${esc(st.id)}" value="${esc(st.due || '')}" aria-label="Stage due date"></span><button class="ib" data-act="del-stage" data-sid="${esc(st.id)}" aria-label="Delete stage">${I.x}</button></div>`
       : `<div class="stage-h"><span style="font-size:15px;font-weight:600;padding:4px 0">${(p.stages || []).length ? 'Other' : 'Tasks'}</span><span class="mut num" style="font-size:12px">${doneN}/${list.length}</span></div>`;
     if (!st && !list.length && (p.stages || []).length) return '';
     return `<div class="stage">${head}${list.map(t => taskHTML(t, { inArea: true, inProject: true })).join('')}
@@ -1530,6 +1695,8 @@ function projectView(p) {
     <div class="hdr" style="margin-bottom:8px"><button class="pill" data-act="nav" data-v="${a ? a.id : 'home'}" style="display:inline-flex;align-items:center;gap:6px;padding-left:8px">${I.l}${a ? adot(a) + esc(a.name) : 'Home'}</button><button class="ib" data-act="del-project" aria-label="Delete project">${I.trash}</button></div>
     <div class="ptitle"><button class="pchk ${p.done ? 'on' : ''}" data-act="proj-done" aria-pressed="${!!p.done}" aria-label="${p.done ? 'Mark project not done' : 'Mark project done'}">${p.done ? I.check : ''}</button><input id="proj-name" class="title-in" style="font-size:28px" dir="auto" value="${esc(p.name)}" aria-label="Project name"></div>
     ${p.done ? `<div class="pdone-note">${I.check} Completed ${esc(fmtDay(isoDay(p.doneAt || new Date().toISOString())))}</div>` : s.total && s.done === s.total ? `<button class="pdone-cta" data-act="proj-done">All ${s.total} tasks are done. Mark the project as completed</button>` : ''}
+    <textarea id="proj-brief" class="pbrief" rows="1" dir="auto" placeholder="Add a brief — the one thing to remember about this project" aria-label="Project brief">${esc(p.brief || '')}</textarea>
+    <div class="pprio" role="group" aria-label="Importance">${PRIO.map(([v, l]) => `<button data-act="proj-prio" data-v="${v}" class="pr-${v} ${(p.priority || 0) === v ? 'on' : ''}" aria-pressed="${(p.priority || 0) === v}">${l}</button>`).join('')}</div>
     <div style="display:flex;align-items:center;gap:10px;margin:10px 0 12px;flex-wrap:wrap;font-size:13px" class="mut">
       <span>${s.done} of ${s.total} done</span><span>·</span>
       <label style="display:flex;align-items:center;gap:6px">Deadline <input type="date" id="proj-deadline" value="${esc(p.deadline || '')}" style="background:transparent;border:0;color:var(--tx);color-scheme:dark;font-size:13px"></label>
@@ -1537,6 +1704,7 @@ function projectView(p) {
       <label style="display:flex;align-items:center;gap:6px">Section <select id="proj-area" class="mini-sel"><option value="">None</option>${AREAS.map(x => `<option value="${x.id}" ${p.areaId === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
     </div>
     <div class="prog"><i style="width:${s.pct}%"></i></div>
+    ${sec('Timeline', timelineHTML(p, ts))}
     ${boardHTML(p, ts)}
     ${linked.length ? sec('Linked events', linked.map(evHTML).join('')) : ''}
     <div class="sec-h" style="margin-top:26px"><h2>${(p.stages || []).length ? 'Stages' : 'List'}</h2></div>
@@ -1654,7 +1822,7 @@ function reviewData(from, to) {
   let streak = 0; { let d = doneDays.has(td) ? td : addD(td, -1); while (doneDays.has(d) && streak < 2000) { streak++; d = addD(d, -1); } }
   const bestDay = Object.entries(perDay).sort((a, b) => b[1] - a[1])[0] || null;
   return { from, to, sc, logs, done, created, postponed, late, avgLate, open, stillOpen, overdue, planned, plannedDone, rep, events, hours: mins / 60, by, scopeProjects,
-    days, perDay, wk, withDue, onTime, lead, buckets, urgentOpen, overdueAge, projDoneRange, projOpen, projDone, notesN, streak, activeDays: Object.keys(perDay).length, bestDay };
+    days, perDay, wk, withDue, onTime, lead, buckets, urgentOpen, overdueAge, projDoneRange, projOpen, projDone, notesN, streak, doneDays, activeDays: Object.keys(perDay).length, bestDay };
 }
 function reviewView() {
   const [from, to] = reviewRange();
@@ -1663,7 +1831,7 @@ function reviewView() {
   const sc = r.sc;
   const loading = ui.rEvents === null;
   const seg = (n, l) => `<button class="${ui.rDays === n ? 'on' : ''}" data-act="range" data-n="${n}" aria-pressed="${ui.rDays === n}">${l}</button>`;
-  const stat = (k, v, s, cls = '', cc = '') => `<div class="card stat ${cc}"><span class="k">${k}</span><span class="v ${cls}">${v}</span><span class="s">${s}</span></div>`;
+  const stat = (k, v, s, cls = '', cc = '', bar = null, bc = 'var(--sand)') => `<div class="card stat ${cc}"><span class="k">${k}</span><span class="v ${cls}">${v}</span>${bar === null ? '' : `<span class="pbar"><i style="width:${Math.round(Math.max(0, Math.min(1, bar)) * 100)}%;background:${bc}"></i></span>`}<span class="s">${s}</span></div>`;
   const projOpts = (sc.fA ? areaProjects(sc.fA) : projects());
   const entries = Object.entries(r.by).sort((a, b) => (b[1].done + b[1].open) - (a[1].done + a[1].open));
   const max = Math.max(1, ...entries.map(([, v]) => v.done + v.open));
@@ -1691,9 +1859,9 @@ function reviewView() {
     <div class="seg" role="group" aria-label="Range">${seg(7, '7 days')}${seg(14, '14 days')}${seg(30, '30 days')}${seg(0, 'Custom')}</div>
     ${ui.rDays === 0 ? `<div class="card" style="margin-top:10px"><div class="field"><label for="r-from">From</label><input type="date" id="r-from" value="${esc(from)}"></div><div class="field"><label for="r-to">To</label><input type="date" id="r-to" value="${esc(to)}"></div></div>` : ''}
     <div class="stats" style="margin-top:16px">
-      ${stat('Tasks done', r.done.length, r.planned ? `${r.plannedDone} of ${r.planned} planned in range` : 'nothing planned in range', '', 'lite')}
-      ${stat('Open now', r.open.length, r.overdue.length ? `<span class="or">${r.overdue.length} overdue</span>` : 'none overdue')}
-      ${stat('Done late', r.late.length, r.late.length ? `avg ${r.avgLate.toFixed(1)} days late` : 'none', r.late.length ? 'or' : '')}
+      ${stat('Tasks done', r.done.length, r.planned ? `${r.plannedDone} of ${r.planned} planned in range` : 'nothing planned in range', '', 'lite', r.planned ? r.plannedDone / r.planned : 0, 'var(--ink)')}
+      ${stat('Open now', r.open.length, r.overdue.length ? `<span class="or">${r.overdue.length} overdue</span>` : 'none overdue', '', '', r.open.length ? r.overdue.length / r.open.length : 0, 'var(--orange)')}
+      ${stat('Done late', r.late.length, r.late.length ? `avg ${r.avgLate.toFixed(1)} days late` : 'none', r.late.length ? 'or' : '', '', r.done.length ? r.late.length / r.done.length : 0, 'var(--orange)')}
       ${stat(sc.fA || sc.fP ? 'Related events' : 'Meetings & events', loading ? '…' : r.events.length, loading ? 'loading calendar' : `${r.hours.toFixed(1)} h in calendar`)}
     </div>
     <p class="mut" style="font-size:13px;margin:12px 2px 0">${r.created.length} created · ${r.postponed.length} postponements · ${r.rep.filter(l => !l.late).length}/${r.rep.length} repeats on time</p>
@@ -1709,48 +1877,6 @@ function reviewView() {
         <button class="btn" data-act="dl-json" ${loading ? 'disabled' : ''} style="font-size:14px;padding:0 8px">JSON</button>
       </div>`)}
   </div>`;
-}
-function reviewNumbersHTML(r) {
-  const pct = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
-  const avg = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
-  const WD = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const busiest = r.done.length ? r.wk.indexOf(Math.max(...r.wk)) : -1;
-  const lead = avg(r.lead);
-  const n = (k, v, s = '', cls = '') => `<div class="ncell ${cls}"><span class="k">${k}</span><span class="v">${v}</span>${s ? `<span class="s">${s}</span>` : ''}</div>`;
-  const cells = [
-    n('Completion rate', pct(r.plannedDone, r.planned), r.planned ? `${r.plannedDone} of ${r.planned} due in range` : 'nothing due in range', 'hi'),
-    n('Done on time', pct(r.onTime, r.withDue.length), r.withDue.length ? `${r.onTime} of ${r.withDue.length} with a date` : 'no dated tasks done'),
-    n('Per day', (r.done.length / r.days).toFixed(1), `${r.done.length} in ${r.days} days`),
-    n('Active days', `${r.activeDays}/${r.days}`, 'days with something done'),
-    n('Best day', r.bestDay ? r.bestDay[1] : '—', r.bestDay ? esc(shortDay(r.bestDay[0])) : ''),
-    n('Streak', r.streak, r.streak === 1 ? 'day in a row' : 'days in a row', r.streak >= 3 ? 'hi' : ''),
-    n('Time to finish', lead === null ? '—' : lead < 1 ? Math.round(lead * 24) + ' h' : lead.toFixed(1) + ' d', 'average, created → done'),
-    n('Created vs done', `${r.created.length} / ${r.done.length}`, r.done.length >= r.created.length ? 'keeping up' : `${r.created.length - r.done.length} more added than done`),
-    n('Busiest weekday', busiest >= 0 ? WD[busiest].slice(0, 3) : '—', busiest >= 0 ? `${r.wk[busiest]} done` : ''),
-    n('Overdue age', r.overdue.length ? r.overdueAge.toFixed(1) + ' d' : '—', r.overdue.length ? `average over ${r.overdue.length} tasks` : 'nothing overdue', r.overdue.length ? 'warn' : ''),
-    n('Urgent open', r.urgentOpen, 'marked urgent', r.urgentOpen ? 'warn' : ''),
-    n('Projects', `${r.projOpen} · ${r.projDone}`, `open · completed${r.projDoneRange ? ` (${r.projDoneRange} in range)` : ''}`),
-    n('Postponed', r.postponed.length, 'times a date was pushed'),
-    r.notesN === null ? '' : n('Notes written', r.notesN, 'in range'),
-  ].join('');
-  /* done per day (per week for long ranges) */
-  const weekly = r.days > 45;
-  const slots = [];
-  if (weekly) { let d = r.from; while (d <= r.to) { const e = addD(d, 6); let c = 0; for (let x = d; x <= e && x <= r.to; x = addD(x, 1)) c += r.perDay[x] || 0; slots.push([d, c]); d = addD(d, 7); } }
-  else for (let d = r.from; d <= r.to; d = addD(d, 1)) slots.push([d, r.perDay[d] || 0]);
-  const mx = Math.max(1, ...slots.map(s => s[1]));
-  const every = Math.ceil(slots.length / 8);
-  const chart = `<div class="dchart">${slots.map(([d, c], i) => `<span title="${esc(shortDay(d))}: ${c}"><b>${c || ''}</b><i style="height:${Math.max(3, Math.round(c / mx * 85))}%" class="${c ? '' : 'z'} ${d === today() ? 'now' : ''}"></i><em>${i % every === 0 ? esc(weekly ? shortDay(d) : String(pd(d).getDate())) : ''}</em></span>`).join('')}</div>`;
-  const wmx = Math.max(1, ...r.wk);
-  const wchart = `<div class="wchart">${r.wk.map((c, i) => `<div><span>${WD[i].slice(0, 3)}</span><span class="t"><i style="width:${Math.round(c / wmx * 100)}%"></i></span><span class="num">${c}</span></div>`).join('')}</div>`;
-  const B = r.buckets, tot = Math.max(1, B.overdue + B.today + B.week + B.later + B.none);
-  const seg = (v, c, l) => v ? `<i style="width:${v / tot * 100}%;background:${c}" title="${l}: ${v}"></i>` : '';
-  const key = (v, c, l) => `<span><i style="background:${c}"></i>${l} <b>${v}</b></span>`;
-  const due = `<div class="stack">${seg(B.overdue, 'var(--orange)', 'Overdue')}${seg(B.today, 'var(--sand)', 'Today')}${seg(B.week, 'var(--blue)', 'Next 7 days')}${seg(B.later, 'var(--green)', 'Later')}${seg(B.none, 'var(--s3)', 'No date')}</div>
-    <div class="skey">${key(B.overdue, 'var(--orange)', 'Overdue')}${key(B.today, 'var(--sand)', 'Today')}${key(B.week, 'var(--blue)', 'Next 7 days')}${key(B.later, 'var(--green)', 'Later')}${key(B.none, 'var(--s3)', 'No date')}</div>`;
-  return sec('In numbers', `<div class="nums">${cells}</div>`)
-    + sec(weekly ? 'Done per week' : 'Done per day', `<div class="card chartc">${chart}</div>`)
-    + `<div class="rgrid">${sec('By weekday', `<div class="card chartc">${wchart}</div>`)}${sec('Open tasks by due date', `<div class="card chartc">${due}</div>`)}</div>`;
 }
 function taskLine(t) {
   const bits = [];
@@ -2073,6 +2199,11 @@ document.addEventListener('click', e => {
     }
     case 'focus': { const f = document.getElementById(el.dataset.f); if (f) { f.scrollIntoView({ block: 'center', behavior: 'smooth' }); setTimeout(() => f.focus(), 250); } break; }
     case 'new-list': { const l = newList(el.dataset.area || 'personal', el.dataset.kind || 'list'); openSheet({ type: 'list', id: l.id }); setTimeout(() => { const i = $('#l-name'); if (i) i.focus(); }, 80); break; }
+    case 'hopen': { if (db.lists[el.dataset.id]) { ui.hSel = ui.hSel || {}; ui.hSel[el.dataset.id] = null; ui.hMonth = ui.hMonth || {}; ui.hMonth[el.dataset.id] = null; openSheet({ type: 'list', id: el.dataset.id }); } break; }
+    case 'hpick': { ui.hSel = ui.hSel || {}; ui.hSel[el.dataset.id] = el.dataset.d; renderSheet(); setTimeout(() => { const i = $('#hp-num'); if (i) i.focus(); }, 40); break; }
+    case 'hset': { const l = db.lists[el.dataset.id]; const d = ui.hSel && ui.hSel[el.dataset.id]; if (!l || !d) break; const vals = { ...(l.vals || {}) }; if (el.dataset.v === '') delete vals[d]; else vals[d] = el.dataset.v === '1'; updList(l, { vals }); ui.hSel[l.id] = null; renderSheet(); renderMain(); break; }
+    case 'hsave': habitSaveNum(el.dataset.id); break;
+    case 'proj-prio': { const p = db.projects[ui.projectId]; if (p) { upd(p, { priority: +el.dataset.v }); renderMain(); } break; }
     case 'hcell': {
       const l = db.lists[el.dataset.id]; if (!l) break; const d = el.dataset.d;
       if (l.htype === 'num') { ui.hSel = ui.hSel || {}; ui.hSel[l.id] = d; renderMain(); setTimeout(() => { const i = document.getElementById('hn-' + l.id); if (i) i.focus(); }, 30); break; }
@@ -2080,7 +2211,7 @@ document.addEventListener('click', e => {
       if (v === true) vals[d] = false; else if (v === false) delete vals[d]; else vals[d] = true;
       updList(l, { vals }); renderMain(); break;
     }
-    case 'hmonth': { const l = db.lists[el.dataset.id]; if (!l) break; ui.hMonth = ui.hMonth || {}; const m = monthAdd(ui.hMonth[l.id] || today().slice(0, 7), +el.dataset.dir); ui.hMonth[l.id] = m >= today().slice(0, 7) ? null : m; renderMain(); break; }
+    case 'hmonth': { const l = db.lists[el.dataset.id]; if (!l) break; ui.hMonth = ui.hMonth || {}; const m = monthAdd(ui.hMonth[l.id] || today().slice(0, 7), +el.dataset.dir); ui.hMonth[l.id] = m >= today().slice(0, 7) ? null : m; if (ui.hSel) ui.hSel[l.id] = null; renderSheet(); break; }
     case 'hclear': { const l = db.lists[el.dataset.id]; if (!l) break; const vals = { ...(l.vals || {}) }; delete vals[el.dataset.d]; updList(l, { vals }); renderMain(); break; }
     case 'htype': { const l = db.lists[el.dataset.id]; if (!l) break; const v = el.dataset.v;
       /* keep what was recorded where it still makes sense */
@@ -2124,6 +2255,7 @@ document.addEventListener('keydown', e => {
   if (e.key !== 'Enter' || e.isComposing) return;
   if (el.form) return; /* forms submit themselves (works with Arabic keyboards too) */
   if (el.classList.contains('hnum')) { e.preventDefault(); el.blur(); return; }
+  if (el.id === 'hp-num') { e.preventDefault(); const l = ui.sheet && ui.sheet.id; if (l) habitSaveNum(l); return; }
   const k = el.dataset && el.dataset.enter;
   if (el.id === 't-title' || el.id === 'ev-title') { e.preventDefault(); el.blur(); return; }
   if (el.id === 'n-title') { e.preventDefault(); const b = $('#n-text') || $('#n-rich'); if (b) b.focus(); return; }
@@ -2186,6 +2318,7 @@ document.addEventListener('input', e => {
     return;
   }
   const p = ui.projectId && db.projects[ui.projectId];
+  if (p && el.id === 'proj-brief') { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; p.brief = el.value; p.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(save, 600); return; }
   if (p && el.id === 'proj-name') { p.name = el.value; p.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(save, 600); return; }
   if (p && el.dataset.stage) { p.stages = p.stages.map(s => s.id === el.dataset.stage ? { ...s, name: el.value } : s); p.updatedAt = now(); clearTimeout(typeT); typeT = setTimeout(save, 600); }
 });
@@ -2231,7 +2364,9 @@ document.addEventListener('change', e => {
     if (el.id === 'proj-deadline') { upd(p, { deadline: el.value || null }); renderMain(); return; }
     if (el.id === 'proj-area') { upd(p, { areaId: el.value || null }); tasks().filter(x => x.projectId === p.id).forEach(x => upd(x, { areaId: el.value || null })); renderMain(); toast(el.value ? 'Moved to ' + areaOf(el.value).name : 'Removed from section'); return; }
     if (el.id === 'proj-name' || el.dataset.stage) { save(); renderMain(); return; }
-    if (el.dataset.stageDue) { upd(p, { stages: p.stages.map(s => s.id === el.dataset.stageDue ? { ...s, due: el.value || null } : s) }); return; }
+    if (el.dataset.stageDue) { upd(p, { stages: p.stages.map(s => s.id === el.dataset.stageDue ? { ...s, due: el.value || null } : s) }); renderMain(); return; }
+    if (el.dataset.stageStart) { upd(p, { stages: p.stages.map(s => s.id === el.dataset.stageStart ? { ...s, start: el.value || null } : s) }); renderMain(); return; }
+    if (el.id === 'proj-brief') { save(); return; }
   }
   if (el.id === 'r-area') { ui.rArea = el.value; ui.rProj = ''; ui.rKey = ''; renderMain(); return; }
   if (el.id === 'r-proj') { ui.rProj = el.value; renderMain(); return; }
