@@ -613,33 +613,73 @@ function gtStatusHTML() {
 /* ---------------- Gemini ----------------
    Your own Gemini API key (Google AI Studio), kept in your private data file in Drive.
    Text goes to Google only when you press a ✦ button. */
-const GEM_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.0-flash'];
+const GEM_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash']; /* last resort; the real list comes from your key */
 const gemKey = () => (db.prefs.geminiKey || '').trim();
 const gemOn = () => !!gemKey();
 const SPARK = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5c.4 4.9 4.6 9.1 9.5 9.5-4.9.4-9.1 4.6-9.5 9.5-.4-4.9-4.6-9.1-9.5-9.5 4.9-.4 9.1-4.6 9.5-9.5z"/></svg>';
+/* Model names change often, so ask Google which models this key can use and pick the newest general "flash" one. */
+let gemList = null;
+const gemVer = n => { const m = n.match(/(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : 0; };
+async function gemModels(key) {
+  if (gemList) return gemList;
+  try {
+    const out = []; let page = '';
+    do {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200${page ? '&pageToken=' + encodeURIComponent(page) : ''}`, { headers: { 'x-goog-api-key': key } });
+      if (!r.ok) { const t = await r.text(); if (/API_KEY|API key/i.test(t)) { const e = new Error(t.slice(0, 200)); e.code = 'key'; try { e.msg = JSON.parse(t).error.message; } catch { } throw e; } break; }
+      const j = await r.json();
+      (j.models || []).forEach(m => { if ((m.supportedGenerationMethods || []).includes('generateContent')) out.push(String(m.name || '').replace(/^models\//, '')); });
+      page = j.nextPageToken || '';
+    } while (page);
+    const bad = /tts|image|live|embed|robotics|computer|aqa|learnlm|gemma|imagen|veo|audio|native|thinking|transcribe|translate|nano/i;
+    const score = n => (/flash/i.test(n) ? 1000 : /pro/i.test(n) ? 500 : 0) + gemVer(n) * 10 - (/lite/i.test(n) ? 3 : 0) - (/preview|exp/i.test(n) ? 6 : 0) + (/latest/i.test(n) ? 1 : 0);
+    gemList = out.filter(n => /^gemini/i.test(n) && !bad.test(n)).sort((a, b) => score(b) - score(a)).slice(0, 5);
+  } catch (e) { if (e.code === 'key') throw e; console.warn('gemini models', e); gemList = []; }
+  return gemList;
+}
 async function gemini(prompt, extra = []) {
   const key = gemKey(); if (!key) { const e = new Error('nokey'); e.code = 'nokey'; throw e; }
-  const models = [db.prefs.geminiModel, ...GEM_MODELS].filter((m, i, a) => m && a.indexOf(m) === i);
-  let last = null;
-  for (const m of models) {
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-      body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }, ...extra] }], generationConfig: { responseMimeType: 'application/json', temperature: 0.3 } })
-    });
-    if (r.status === 404) { last = new Error('model ' + m); continue; }
-    if (!r.ok) { const t = await r.text(); const e = new Error(r.status + ' ' + t.slice(0, 300)); e.status = r.status; e.code = r.status === 429 ? 'limit' : /API_KEY|API key/i.test(t) ? 'key' : 'err'; try { e.msg = JSON.parse(t).error.message; } catch { e.msg = 'error ' + r.status; } throw e; }
-    if (db.prefs.geminiModel !== m) { db.prefs.geminiModel = m; }
+  const found = await gemModels(key);
+  const models = [db.prefs.geminiModel, ...found, ...GEM_MODELS].filter((m, i, a) => m && a.indexOf(m) === i);
+  let last = null; const tried = {};
+  for (let k = 0; k < models.length; k++) {
+    const m = models[k];
+    let r;
+    try {
+      r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }, ...extra] }], generationConfig: { responseMimeType: 'application/json', temperature: 0.3 } })
+      });
+    } catch (e) { const x = new Error('network'); x.code = 'err'; x.msg = 'network error'; throw x; }
+    if (!r.ok) {
+      const t = await r.text(); let msg = 'error ' + r.status; try { msg = JSON.parse(t).error.message || msg; } catch { }
+      const e = new Error(r.status + ' ' + t.slice(0, 300)); e.status = r.status; e.msg = msg;
+      e.code = r.status === 429 ? 'limit' : /API_KEY_INVALID|API key not valid|API key expired/i.test(t) ? 'key' : 'err';
+      /* this model is busy right now (high demand / overloaded): wait a moment, try once more, then move to another model */
+      if (r.status === 503 || r.status === 500 || r.status === 504 || /high demand|overloaded|unavailable|try again later/i.test(msg)) {
+        e.code = 'busy'; last = e;
+        if (!tried[m]) { tried[m] = 1; await new Promise(z => setTimeout(z, 1500)); models.splice(models.indexOf(m) + 1, 0, m); }
+        continue;
+      }
+      /* this model isn't available to this key (retired, renamed, no access, can't take audio): try the next one */
+      if (e.code !== 'key' && (r.status === 404 || ((r.status === 400 || r.status === 403) && /model|not found|not supported|no longer|access|unsupported|mime|modality/i.test(msg)))) {
+        if (db.prefs.geminiModel === m) db.prefs.geminiModel = null;
+        last = e; continue;
+      }
+      throw e;
+    }
+    if (db.prefs.geminiModel !== m) { db.prefs.geminiModel = m; persist(); }
     const j = await r.json();
     const txt = ((j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || []).map(p => p.text || '').join('').trim();
     try { return JSON.parse(txt.replace(/^```(?:json)?\s*|\s*```$/g, '')); }
-    catch { const e = new Error('bad json'); e.code = 'err'; throw e; }
+    catch { const e = new Error('bad json'); e.code = 'err'; e.msg = 'unexpected answer'; throw e; }
   }
-  throw last || new Error('no model');
+  throw last || Object.assign(new Error('no model'), { code: 'err', msg: 'no Gemini model is available to this key' });
 }
 function gemFail(e) {
   console.warn('gemini', e);
   const c = e && e.code;
-  toast(c === 'nokey' ? 'Add your Gemini key in Settings first' : c === 'key' ? 'Gemini didn’t accept the key — check it in Settings' : c === 'limit' ? 'Gemini’s free limit is reached for now — try again in a minute' : !navigator.onLine ? 'You’re offline' : 'Gemini couldn’t answer' + (e && e.msg ? ': ' + String(e.msg).slice(0, 110) : ' — try again'));
+  toast(c === 'nokey' ? 'Add your Gemini key in Settings first' : c === 'key' ? 'Gemini didn’t accept the key — check it in Settings' : c === 'limit' ? 'Gemini’s free limit is reached for now — try again in a minute' : c === 'busy' ? 'Gemini is busy right now — your recording is saved, try ✦ again in a minute' : !navigator.onLine ? 'You’re offline' : 'Gemini couldn’t answer' + (e && e.msg ? ': ' + String(e.msg).slice(0, 110) : ' — try again'));
 }
 function gemContext() {
   const d = new Date();
@@ -2581,7 +2621,7 @@ function settingsSheet() {
     <p class="mut" style="margin:10px 2px 0;font-size:13px;line-height:1.6">Two-way with your “My Tasks” list: tasks you add here appear in Google Tasks, and tasks added there — by you, Gemini or “Hey Google” — appear here. Ticking, dates and deleting sync both ways. Add #housing, #dorba… to a Google task to file it in that section.</p>
     ${gtOn() ? `<button class="btn full" style="margin-top:10px" data-act="gt-now">${I.sync} Sync Google Tasks now</button>` : ''}`)}
   ${sec('Gemini', `<div class="card"><div class="field"><label for="gem-key">API key</label><input id="gem-key" type="password" autocomplete="off" spellcheck="false" placeholder="${gemOn() ? '•••••••• saved' : 'Paste your key'}" style="text-align:end"></div>
-    <div class="field"><span class="lb">Status</span><span style="font-size:14px">${gemOn() ? 'Ready · ' + esc(db.prefs.geminiModel || GEM_MODELS[0]) : 'Not set'}</span></div>
+    <div class="field"><span class="lb">Status</span><span style="font-size:14px">${gemOn() ? 'Ready' + (db.prefs.geminiModel ? ' · ' + esc(db.prefs.geminiModel) : '') : 'Not set'}</span></div>
     ${gemOn() ? `<div class="field"><span class="lb" style="color:var(--tx)">Write out voice notes automatically</span><button class="sw blue ${db.prefs.autoTx ? 'on' : ''}" data-act="auto-tx" role="switch" aria-checked="${!!db.prefs.autoTx}" aria-label="Write out voice notes automatically"></button></div>` : ''}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px"><button class="btn" data-act="gem-save">Save key</button>${gemOn() ? '<button class="btn" data-act="gem-clear">Remove key</button>' : '<a class="btn" style="text-decoration:none" target="_blank" rel="noopener" href="https://aistudio.google.com/apikey">Get a free key</a>'}</div>
     <p class="mut" style="margin:10px 2px 0;font-size:13px;line-height:1.6">With a key, ${SPARK} buttons appear: turn any text or note into tasks, plan a project’s stages, and read your Review numbers. Text is sent to Google only when you press one. The key is kept in your private data file in Drive, so you enter it once.</p>`)}
@@ -2657,7 +2697,7 @@ document.addEventListener('click', e => {
     }
     case 'gt-allow': connect(true); break;
     case 'gt-now': gtLast = 0; gtSync(true).then(ch => { if (ch) scheduleSync(800); toast(gtErr ? 'Google Tasks: not synced' : 'Google Tasks synced'); }); renderSheet(); break;
-    case 'gem-save': { const i = $('#gem-key'); const v = i ? i.value.trim() : ''; if (!v) { toast('Paste the key first'); break; } db.prefs = { ...db.prefs, geminiKey: v, updatedAt: now() }; save(); toast('Checking the key…');
+    case 'gem-save': { const i = $('#gem-key'); const v = i ? i.value.trim() : ''; if (!v) { toast('Paste the key first'); break; } gemList = null; db.prefs = { ...db.prefs, geminiKey: v, geminiModel: null, updatedAt: now() }; save(); toast('Checking the key…');
       gemini('Return JSON: {"ok":true}').then(() => { toast('Gemini is ready'); renderSheet(); renderMain(); }).catch(e => { gemFail(e); renderSheet(); }); renderSheet(); break; }
     case 'gem-clear': db.prefs = { ...db.prefs, geminiKey: '', updatedAt: now() }; save(); renderSheet(); renderMain(); toast('Key removed'); break;
     case 'ai-qa': { const i = document.getElementById(el.dataset.for); const v = i ? i.value : ''; const ctx = qaCtx(); aiTasksFrom(v, ctx); if (i && v.trim()) { i.value = ''; ui.qa = ''; } break; }
