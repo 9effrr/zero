@@ -772,3 +772,27 @@ a{color:var(--sand2)}
 /* v13: writing direction per paragraph */
 .writer .rich>*{text-align:start}
 .ntools .ndir button{display:flex;align-items:center;justify-content:center;font-size:12px}
+
+/* v14: Gemini + Google Tasks */
+.qa .go.ai{background:transparent;color:var(--sand);margin-inline-end:4px}
+.ib.ai,.dash.ai,.ai-btn{color:var(--sand)}
+.ai-btn{border:1px solid rgba(216,190,150,.25);background:rgba(216,190,150,.06)}
+.ai-card{padding:14px 16px;border:1px solid rgba(216,190,150,.2)}
+.ai-card p{margin:6px 0 0;font-size:15px;line-height:1.7;color:var(--tx)}
+.ai-h{display:flex;align-items:center;gap:6px;color:var(--sand);font-size:13px;font-weight:600}
+.ai-h .ib{margin-inline-start:auto;width:32px;height:32px}
+.ai-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:12px}
+.ai-l .k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)}
+.ai-l ul{margin:6px 0 0;padding-inline-start:18px;font-size:13.5px;line-height:1.6;color:var(--tx2)}
+.ai-busy{display:inline-flex;align-items:center;gap:8px;color:var(--sand);font-size:14px;animation:aipulse 1.4s ease-in-out infinite}
+@keyframes aipulse{50%{opacity:.45}}
+.ai-wait{padding:40px 0;text-align:center}
+.ai-items{display:flex;flex-direction:column;gap:2px;padding:4px}
+.ai-it,.ai-st{display:flex;align-items:flex-start;gap:12px;width:100%;text-align:start;background:transparent;border:0;color:var(--tx);padding:10px 8px;border-radius:12px}
+.ai-st{background:var(--s1);margin-bottom:8px;padding:12px}
+.ai-it .chk,.ai-st .chk{width:22px;height:22px;border-radius:11px;border:1.5px solid var(--mut);flex-shrink:0;display:flex;align-items:center;justify-content:center;margin-top:1px}
+.ai-it.on .chk,.ai-st.on .chk{background:var(--sand);border-color:var(--sand);color:var(--ink)}
+.ai-it .tx,.ai-st .tx{display:flex;flex-direction:column;gap:3px;min-width:0;font-size:15px}
+.ai-it .tx .mut,.ai-st .tx .mut{font-size:12px;display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.ai-sub{font-size:13px;color:var(--tx2);line-height:1.5}
+.ai-it:not(.on) .tx,.ai-st:not(.on) .tx{opacity:.5}

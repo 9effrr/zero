@@ -7,7 +7,8 @@ const CFG = {
     'openid', 'email',
     'https://www.googleapis.com/auth/calendar.events',
     'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
-    'https://www.googleapis.com/auth/drive.file'
+    'https://www.googleapis.com/auth/drive.file',
+    'https://www.googleapis.com/auth/tasks'
   ].join(' '),
   folder: 'Zero',
   file: 'zero-data.json'
@@ -472,12 +473,285 @@ async function sync(retried) {
     setSync('ok');
     softRender();
     uploadImages();
+    if (gtOn()) gtSync().then(ch => { if (ch) scheduleSync(800); });
   } catch (e) {
     console.error(e); setSync('err');
   } finally {
     syncing = false;
     if (again) { again = false; scheduleSync(300); }
   }
+}
+
+/* ---------------- Google Tasks ----------------
+   Two-way with the "My Tasks" list (the one Gemini and Google Assistant add to).
+   Each app task keeps gtId (Google task id), gtAt (Google's last "updated" we have seen) and
+   gtPushed (the app updatedAt we last sent). Tasks that come from Google get the id g_<googleId>,
+   so two devices importing the same Google task end up with one task after the Drive merge. */
+const GT = 'https://tasks.googleapis.com/tasks/v1';
+const GT_SCOPE = 'https://www.googleapis.com/auth/tasks';
+let gtBusy = false, gtLast = 0, gtErr = LS.get('gtErr', null);
+const gtOn = () => !!db.prefs.gtasksOn;
+function gtStamp(t, gu) { t.updatedAt = now(); t.gtPushed = t.updatedAt; if (gu) t.gtAt = gu; }
+function gtBody(t) {
+  return {
+    title: t.title || '', notes: t.notes || '',
+    status: t.done ? 'completed' : 'needsAction',
+    completed: t.done ? (t.doneAt || new Date().toISOString()) : null,
+    due: t.due ? t.due + 'T00:00:00.000Z' : null
+  };
+}
+const gtWants = t => t.updatedAt > (t.gtPushed || 0) && (t.gtId || (!t.deleted && !t.done && (t.title || '').trim()));
+function gtPull(g, byG, first) {
+  const gu = Date.parse(g.updated) || 0;
+  let t = byG[g.id] || db.tasks['g_' + g.id];
+  const gDone = g.status === 'completed';
+  const gDue = g.due ? g.due.slice(0, 10) : null;
+  if (g.deleted) {
+    if (t && !t.deleted) { addLog('deleted', t); t.deleted = true; gtStamp(t, gu); return true; }
+    return false;
+  }
+  if (!t) {
+    const raw = (g.title || '').trim();
+    if (!raw || gDone) return false; /* finished Google tasks stay in Google */
+    let areaId = null;
+    const title = raw.replace(/(^|\s)#(\S+)/g, (m, sp, w) => { const a = findArea(w); if (a && !areaId) { areaId = a.id; return ''; } return m; }).replace(/\s+/g, ' ').trim() || raw;
+    t = {
+      id: 'g_' + g.id, title, notes: g.notes || '', due: gDue, time: null, urgent: false, areaId, projectId: null, stageId: null,
+      subtasks: [], links: [], images: [], repeat: null, done: false, doneAt: null, postponed: 0,
+      createdAt: new Date(gu || Date.now()).toISOString(), deleted: false, gtId: g.id, fromGoogle: true
+    };
+    db.tasks[t.id] = t; byG[g.id] = t; addLog('created', t); gtStamp(t, gu);
+    return true;
+  }
+  if (!t.gtId) t.gtId = g.id;
+  if (gu <= (t.gtAt || 0) + 1500) return false;            /* nothing new on Google's side */
+  if (t.updatedAt > (t.gtPushed || 0) && t.updatedAt > gu) return false; /* our edit is newer; the push wins */
+  if (t.deleted) { t.deleted = false; }                     /* edited in Google after a delete here: keep it */
+  if (g.title) { let ar = null; const tt = g.title.replace(/(^|\s)#(\S+)/g, (m, sp, w) => { const x = findArea(w); if (x && !ar) { ar = x.id; return ''; } return m; }).replace(/\s+/g, ' ').trim(); t.title = tt || g.title; if (ar && !t.projectId) t.areaId = ar; }
+  t.notes = g.notes || '';
+  if (gDue !== (t.due || null)) { t.due = gDue; if (!gDue) t.time = null; }
+  let repush = false;
+  if (gDone && !t.done) {
+    const td = today();
+    if (t.repeat) {
+      const due = t.due || td;
+      addLog('done', t, { due, late: due < td ? diffD(due, td) : 0, via: 'google' });
+      t.due = nextOcc(due, t.repeat); t.subtasks = (t.subtasks || []).map(s => ({ ...s, done: false })); t.lastDoneAt = g.completed || new Date().toISOString();
+      repush = true; /* reopen it in Google with the next date */
+    } else {
+      addLog('done', t, { late: t.due && t.due < td ? diffD(t.due, td) : 0, via: 'google' });
+      t.done = true; t.doneAt = g.completed || new Date().toISOString();
+    }
+  } else if (!gDone && t.done) { addLog('undone', t); t.done = false; t.doneAt = null; }
+  gtStamp(t, gu);
+  if (repush) t.gtPushed = 0;
+  return true;
+}
+async function gtPush(t) {
+  if (!gtWants(t)) return false;
+  const list = `${GT}/lists/@default/tasks`;
+  const json = { method: 'POST', headers: { 'Content-Type': 'application/json' } };
+  if (t.gtId && t.deleted) {
+    try { await gfetch(`${list}/${encodeURIComponent(t.gtId)}`, { method: 'DELETE' }); }
+    catch (e) { if (e.status !== 404 && e.status !== 410) throw e; }
+    gtStamp(t); return true;
+  }
+  if (t.gtId) {
+    try {
+      const g = await (await gfetch(`${list}/${encodeURIComponent(t.gtId)}`, { ...json, method: 'PATCH', body: JSON.stringify(gtBody(t)) })).json();
+      gtStamp(t, Date.parse(g.updated)); return true;
+    } catch (e) { if (e.status !== 404 && e.status !== 410) throw e; t.gtId = null; if (t.deleted || t.done) { gtStamp(t); return true; } }
+  }
+  const g = await (await gfetch(list, { ...json, body: JSON.stringify(gtBody(t)) })).json();
+  t.gtId = g.id; gtStamp(t, Date.parse(g.updated));
+  return true;
+}
+function gtSetErr(e) {
+  const m = String((e && e.message) || e);
+  gtErr = !e ? null : /SCOPE_INSUFFICIENT|insufficient.*scope|403.*scope/i.test(m) ? 'scope'
+    : /SERVICE_DISABLED|accessNotConfigured|has not been used|is disabled/i.test(m) ? 'api'
+    : /auth:/.test(m) ? 'auth' : 'net';
+  LS.set('gtErr', gtErr);
+}
+async function gtSync(force) {
+  if (!gtOn() || gtBusy || !authed() || !navigator.onLine) return false;
+  if (!force && now() - gtLast < 20e3 && !Object.values(db.tasks).some(gtWants)) return false;
+  gtBusy = true; let changed = false;
+  try {
+    const since = LS.get('gtSince', null);
+    const startedAt = new Date(Date.now() - 120e3).toISOString();
+    const byG = {}; Object.values(db.tasks).forEach(t => { if (t.gtId) byG[t.gtId] = t; });
+    const items = []; let page = null;
+    do {
+      const q = new URLSearchParams({ maxResults: '100', showCompleted: 'true', showHidden: 'true', showDeleted: 'true' });
+      if (since) q.set('updatedMin', since);
+      if (page) q.set('pageToken', page);
+      const j = await (await gfetch(`${GT}/lists/@default/tasks?${q}`)).json();
+      items.push(...(j.items || [])); page = j.nextPageToken;
+    } while (page);
+    for (const g of items) if (gtPull(g, byG, !since)) changed = true;
+    for (const t of Object.values(db.tasks)) if (await gtPush(t)) changed = true;
+    LS.set('gtSince', startedAt); LS.set('gtLastOk', now()); gtLast = now(); gtSetErr(null);
+  } catch (e) { console.warn('google tasks', e); gtSetErr(e); }
+  finally { gtBusy = false; }
+  if (changed) { persist(); LS.set('dirty', true); softRender(); }
+  if (ui.sheet && ui.sheet.type === 'settings') renderSheet();
+  return changed;
+}
+function gtStatusHTML() {
+  if (!gtOn()) return 'Off';
+  if (gtBusy) return 'Syncing…';
+  if (gtErr === 'scope') return '<button class="pill" data-act="gt-allow">Allow access to Google Tasks</button>';
+  if (gtErr === 'api') return '<span class="or">Google Tasks API is off in the app’s Google Cloud project</span>';
+  if (gtErr === 'auth') return '<button class="pill" data-act="connect">Reconnect</button>';
+  if (gtErr === 'net') return '<span class="or">Couldn’t reach Google Tasks</span>';
+  const t = LS.get('gtLastOk', 0);
+  return t ? 'Synced ' + esc(new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })) : 'Waiting…';
+}
+
+/* ---------------- Gemini ----------------
+   Your own Gemini API key (Google AI Studio), kept in your private data file in Drive.
+   Text goes to Google only when you press a ✦ button. */
+const GEM_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.0-flash'];
+const gemKey = () => (db.prefs.geminiKey || '').trim();
+const gemOn = () => !!gemKey();
+const SPARK = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5c.4 4.9 4.6 9.1 9.5 9.5-4.9.4-9.1 4.6-9.5 9.5-.4-4.9-4.6-9.1-9.5-9.5 4.9-.4 9.1-4.6 9.5-9.5z"/></svg>';
+async function gemini(prompt) {
+  const key = gemKey(); if (!key) { const e = new Error('nokey'); e.code = 'nokey'; throw e; }
+  const models = [db.prefs.geminiModel, ...GEM_MODELS].filter((m, i, a) => m && a.indexOf(m) === i);
+  let last = null;
+  for (const m of models) {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+      body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { responseMimeType: 'application/json', temperature: 0.3 } })
+    });
+    if (r.status === 404) { last = new Error('model ' + m); continue; }
+    if (!r.ok) { const t = await r.text(); const e = new Error(r.status + ' ' + t.slice(0, 300)); e.status = r.status; e.code = r.status === 429 ? 'limit' : /API_KEY|API key/i.test(t) ? 'key' : 'err'; throw e; }
+    if (db.prefs.geminiModel !== m) { db.prefs.geminiModel = m; }
+    const j = await r.json();
+    const txt = ((j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || []).map(p => p.text || '').join('').trim();
+    try { return JSON.parse(txt.replace(/^```(?:json)?\s*|\s*```$/g, '')); }
+    catch { const e = new Error('bad json'); e.code = 'err'; throw e; }
+  }
+  throw last || new Error('no model');
+}
+function gemFail(e) {
+  console.warn('gemini', e);
+  const c = e && e.code;
+  toast(c === 'nokey' ? 'Add your Gemini key in Settings first' : c === 'key' ? 'Gemini didn’t accept the key — check it in Settings' : c === 'limit' ? 'Gemini’s free limit is reached for now — try again in a minute' : !navigator.onLine ? 'You’re offline' : 'Gemini couldn’t answer — try again');
+}
+function gemContext() {
+  const d = new Date();
+  return `Today is ${today()} (${d.toLocaleDateString('en-GB', { weekday: 'long' })}), time zone ${TZ}.
+Sections (use the id): ${AREAS.map(a => `${a.id} = ${a.name}`).join(', ')}.
+Open projects: ${projects().filter(p => !p.done).map(p => `"${p.name}"${p.areaId ? ' (' + p.areaId + ')' : ''}`).join(', ') || 'none'}.`;
+}
+const AI_TASK_SHAPE = `Return JSON: {"tasks":[{"title":string,"due":"YYYY-MM-DD" or null,"time":"HH:MM" or null,"urgent":boolean,"area":section id or null,"project":exact name from the open projects list or null,"notes":string or null}]}.
+Keep each title short and in the same language the user wrote in. Resolve relative dates (tomorrow, Thursday, غداً, الخميس) against today. Only set a project when the text clearly refers to one of the listed projects. Do not invent tasks that are not in the text.`;
+function aiOpen(s) { ui.ai = s; openSheet({ type: 'ai' }); }
+async function aiRun(kind, prompt, ctx) {
+  aiOpen({ kind, busy: true, ctx });
+  try {
+    const out = await gemini(prompt);
+    if (!ui.sheet || ui.sheet.type !== 'ai') return;
+    if (kind === 'tasks') { const ts = (out.tasks || []).filter(x => x && (x.title || '').trim()).slice(0, 40); ui.ai = { kind, ctx, items: ts.map(x => ({ ...x, on: true })) }; }
+    else if (kind === 'plan') { const st = (out.stages || []).filter(x => x && (x.name || '').trim()).slice(0, 12); ui.ai = { kind, ctx, stages: st.map(x => ({ ...x, on: true, tasks: (x.tasks || []).filter(Boolean).slice(0, 15) })) }; }
+    renderSheet();
+  } catch (e) { gemFail(e); if (ui.sheet && ui.sheet.type === 'ai') closeSheet(); }
+}
+function aiTasksFrom(text, ctx = {}) {
+  if (!gemOn()) { gemFail({ code: 'nokey' }); return; }
+  const t = String(text || '').trim(); if (!t) { toast('Write something first'); return; }
+  aiRun('tasks', `You turn a person's quick text into to-do tasks for their planner.
+${gemContext()}
+${ctx.areaId ? `The user is inside the "${areaOf(ctx.areaId).name}" section; default to it.` : ''}${ctx.projectId && db.projects[ctx.projectId] ? ` The user is inside the project "${db.projects[ctx.projectId].name}"; default to it.` : ''}
+${AI_TASK_SHAPE}
+Text:
+"""${t.slice(0, 8000)}"""`, ctx);
+}
+function aiPlanProject(p) {
+  if (!gemOn()) { gemFail({ code: 'nokey' }); return; }
+  const ts = tasks().filter(t => t.projectId === p.id);
+  aiRun('plan', `You plan projects as a few clear stages with dates, like a simple Gantt chart.
+${gemContext()}
+Project: "${p.name}"${p.brief ? `\nBrief: ${p.brief}` : ''}${p.deadline ? `\nDeadline: ${p.deadline}` : ''}
+Existing stages: ${(p.stages || []).map(s => `"${s.name}" ${s.start || ''}→${s.due || ''}`).join(', ') || 'none'}
+Existing tasks: ${ts.map(t => `"${t.title}"${t.done ? ' (done)' : ''}`).join(', ') || 'none'}
+Suggest the stages that are still missing (do not repeat existing ones), in order, starting from today, ending by the deadline if there is one.
+Return JSON: {"stages":[{"name":string,"start":"YYYY-MM-DD","due":"YYYY-MM-DD","tasks":[string]}]} with 2–6 stages and 2–6 short tasks each, written in the same language as the project name and tasks.`, { projectId: p.id });
+}
+async function aiReview() {
+  if (!gemOn()) { gemFail({ code: 'nokey' }); return; }
+  const [from, to] = reviewRange(); const r = reviewData(from, to); const key = ui.rKey + '|' + from + '|' + to;
+  ui.rAI = { key, busy: true }; renderMain();
+  const data = {
+    range: { from, to, days: r.days }, scope: r.sc.label,
+    done: r.done.length, created: r.created.length, plannedDue: r.planned, plannedDone: r.plannedDone, onTime: r.onTime, doneWithDue: r.withDue.length,
+    doneLate: r.late.length, avgDaysLate: +r.avgLate.toFixed(1), openNow: r.open.length, overdueNow: r.overdue.length, urgentOpen: r.urgentOpen,
+    postponements: r.postponed.length, streakDays: r.streak, activeDays: r.activeDays, busiestWeekday: r.wk, repeatsDone: r.rep.length,
+    bySection: r.by, calendarHours: +r.hours.toFixed(1),
+    doneTitles: r.done.slice(-40).map(l => l.title), overdueTitles: r.overdue.slice(0, 15).map(t => t.title + (t.due ? ' (due ' + t.due + ')' : ''))
+  };
+  try {
+    const out = await gemini(`You are a calm, honest productivity coach looking at someone's planner numbers for a period.
+${gemContext()}
+Data: ${JSON.stringify(data)}
+Write in Arabic if most task titles are Arabic, otherwise English. Be specific, use the numbers, no fluff, no emojis.
+Return JSON: {"summary":"2–3 sentences","wins":[up to 3 short points],"watch":[up to 3 short points],"next":[up to 3 concrete next steps]}`);
+    ui.rAI = { key, ...out };
+  } catch (e) { gemFail(e); ui.rAI = null; }
+  renderMain();
+}
+function aiReviewHTML() {
+  if (!gemOn()) return '';
+  const [from, to] = reviewRange(); const key = ui.rKey + '|' + from + '|' + to; const a = ui.rAI && ui.rAI.key === key ? ui.rAI : null;
+  const list = (h, xs) => xs && xs.length ? `<div class="ai-l"><span class="k">${h}</span><ul>${xs.map(x => `<li dir="auto">${esc(x)}</li>`).join('')}</ul></div>` : '';
+  if (!a) return `<button class="btn ai-btn full" style="margin-top:14px" data-act="ai-review">${SPARK} Read this period with Gemini</button>`;
+  if (a.busy) return `<div class="card ai-card" style="margin-top:14px"><span class="ai-busy">${SPARK} Gemini is reading your numbers…</span></div>`;
+  return `<div class="card ai-card" style="margin-top:14px"><div class="ai-h">${SPARK} Gemini<button class="ib" data-act="ai-review" aria-label="Ask again">${I.sync}</button></div>
+    <p dir="auto">${esc(a.summary || '')}</p>
+    <div class="ai-cols">${list('Going well', a.wins)}${list('Watch', a.watch)}${list('Next', a.next)}</div></div>`;
+}
+function aiSheet() {
+  const a = ui.ai || {};
+  const top = (t) => `<div class="sheet-top"><button class="ib" data-act="close-sheet" aria-label="Close">${I.l}</button><span class="crumb">${SPARK} ${t}</span><span style="width:40px"></span></div>`;
+  if (a.busy) return top('Gemini') + `<div class="ai-wait"><span class="ai-busy">${SPARK} Thinking…</span></div>`;
+  if (a.kind === 'tasks') {
+    const n = (a.items || []).filter(x => x.on).length;
+    return top('Tasks from Gemini') + (a.items && a.items.length ? `<p class="mut" style="font-size:13px;margin:0 2px 10px">Untick anything you don’t want, then add.</p>
+      <div class="card ai-items">${a.items.map((x, i) => { const ar = areaOf(x.area); const pr = x.project && findProject(x.project, x.area); return `<button class="ai-it ${x.on ? 'on' : ''}" data-act="ai-tog" data-i="${i}" aria-pressed="${!!x.on}"><span class="chk">${x.on ? I.check : ''}</span><span class="tx"><span dir="auto">${esc(x.title)}</span><span class="mut">${[x.due ? esc(relDay(x.due)) + (x.time ? ' ' + esc(x.time) : '') : '', ar ? adot(ar) + esc(ar.name) : '', pr ? esc(pr.name) : '', x.urgent ? '<span class="or">Urgent</span>' : ''].filter(Boolean).join(' · ')}</span></span></button>`; }).join('')}</div>
+      <button class="btn pri full" style="margin-top:14px" data-act="ai-add" ${n ? '' : 'disabled'}>Add ${n} task${n === 1 ? '' : 's'}</button>` : '<p class="mut">Gemini didn’t find any tasks in that text.</p>');
+  }
+  if (a.kind === 'plan') {
+    const n = (a.stages || []).filter(x => x.on).length;
+    return top('Plan from Gemini') + (a.stages && a.stages.length ? `<p class="mut" style="font-size:13px;margin:0 2px 10px">Suggested stages with dates and tasks. Untick any you don’t want.</p>
+      <div class="ai-items">${a.stages.map((s, i) => `<button class="card ai-st ${s.on ? 'on' : ''}" data-act="ai-tog" data-i="${i}" aria-pressed="${!!s.on}"><span class="chk">${s.on ? I.check : ''}</span><span class="tx"><b dir="auto">${esc(s.name)}</b><span class="mut num">${s.start ? esc(shortDay(s.start)) : ''} → ${s.due ? esc(shortDay(s.due)) : ''}</span>${(s.tasks || []).length ? `<span class="ai-sub" dir="auto">${s.tasks.map(esc).join(' · ')}</span>` : ''}</span></button>`).join('')}</div>
+      <button class="btn pri full" style="margin-top:14px" data-act="ai-add" ${n ? '' : 'disabled'}>Add ${n} stage${n === 1 ? '' : 's'}</button>` : '<p class="mut">Gemini had no suggestions.</p>');
+  }
+  return top('Gemini');
+}
+function aiApply() {
+  const a = ui.ai; if (!a) return;
+  const okDate = d => /^\d{4}-\d{2}-\d{2}$/.test(d || '') ? d : null;
+  if (a.kind === 'tasks') {
+    let n = 0;
+    a.items.filter(x => x.on).forEach(x => {
+      let areaId = areaOf(x.area) ? x.area : (a.ctx && a.ctx.areaId) || null;
+      let projectId = (a.ctx && a.ctx.projectId) || null;
+      if (x.project) { const f = findProject(x.project, areaId); if (f) projectId = f.id; }
+      if (projectId && db.projects[projectId] && db.projects[projectId].areaId) areaId = db.projects[projectId].areaId;
+      newTask({ title: String(x.title).trim(), due: okDate(x.due), time: /^\d{2}:\d{2}$/.test(x.time || '') ? x.time : null, urgent: !!x.urgent, areaId, projectId, notes: x.notes || '' });
+      n++;
+    });
+    toast(`Added ${n} task${n === 1 ? '' : 's'}`);
+  } else if (a.kind === 'plan') {
+    const p = db.projects[a.ctx.projectId]; if (!p) return;
+    const add = a.stages.filter(s => s.on).map(s => ({ id: uid(), name: String(s.name).trim(), start: okDate(s.start), due: okDate(s.due), tasks: s.tasks || [] }));
+    upd(p, { stages: [...(p.stages || []), ...add.map(({ tasks, ...s }) => s)] });
+    add.forEach(s => s.tasks.forEach(tt => newTask({ title: String(tt).trim(), projectId: p.id, stageId: s.id, areaId: p.areaId || null })));
+    toast(`Added ${add.length} stage${add.length === 1 ? '' : 's'}`);
+  }
+  ui.ai = null; closeSheet(); renderMain();
 }
 
 /* ---------------- calendar ---------------- */
@@ -833,7 +1107,7 @@ function qaPlaceholder() {
 function qaHTML(id) {
   return `<form class="qa" data-form="qa" autocomplete="off"><label class="sr" for="${id}">Quick add</label>
     <input id="${id}" data-enter="qa" dir="auto" enterkeyhint="done" placeholder="${esc(qaPlaceholder())}" value="${esc(ui.qa)}">
-    <button class="go" type="submit" aria-label="Add">${I.plus}</button></form>
+    ${gemOn() ? `<button class="go ai" type="button" data-act="ai-qa" data-for="${id}" aria-label="Turn into tasks with Gemini">${SPARK}</button>` : ''}<button class="go" type="submit" aria-label="Add">${I.plus}</button></form>
     <div class="qa-prev" id="${id}-prev">${ui.view === 'notes' || ui.view === 'home' ? '' : qaPreview(ui.qa)}</div>`;
 }
 function bottomHTML() {
@@ -1731,7 +2005,7 @@ function projectView(p) {
     <div class="sec-h" style="margin-top:26px"><h2>${(p.stages || []).length ? 'Stages' : 'List'}</h2></div>
     ${(p.stages || []).map(stageBlock).join('')}
     ${stageBlock(null)}
-    <div style="margin-top:22px"><button class="dash" style="width:100%" data-act="add-stage">+ Add stage</button></div>
+    <div style="margin-top:22px;display:grid;grid-template-columns:${gemOn() ? '1fr 1fr' : '1fr'};gap:8px"><button class="dash" style="width:100%" data-act="add-stage">+ Add stage</button>${gemOn() ? `<button class="dash ai" style="width:100%" data-act="ai-plan">${SPARK} Plan stages with Gemini</button>` : ''}</div>
   </div>`;
 }
 
@@ -1886,6 +2160,7 @@ function reviewView() {
       ${stat(sc.fA || sc.fP ? 'Related events' : 'Meetings & events', loading ? '…' : r.events.length, loading ? 'loading calendar' : `${r.hours.toFixed(1)} h in calendar`)}
     </div>
     <p class="mut" style="font-size:13px;margin:12px 2px 0">${r.created.length} created · ${r.postponed.length} postponements · ${r.rep.filter(l => !l.late).length}/${r.rep.length} repeats on time</p>
+    ${aiReviewHTML()}
     ${reviewNumbersHTML(r)}
     ${focus}
     ${entries.length ? sec(byTitle, `<div class="bars">${entries.map(([n, v]) => `<div><div class="l"><span dir="auto" style="display:flex;align-items:center;gap:7px">${colorFor(n) ? `<i class="adot" style="background:${colorFor(n)}"></i>` : ''}${esc(n)}</span><span class="mut">${v.done} done · ${v.open} open${v.overdue ? ` · <span class="or">${v.overdue} late</span>` : ''}</span></div><div class="t"><i style="width:${Math.round((v.done + v.open) / max * 100)}%;${colorFor(n) ? 'background:' + colorFor(n) : ''}"></i></div></div>`).join('')}</div>`) : ''}
@@ -2037,6 +2312,7 @@ function renderSheet() {
   if (s.type === 'task') { const t = db.tasks[s.id]; if (!t || t.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = taskSheet(t); }
   else if (s.type === 'event') inner = eventSheet(s);
   else if (s.type === 'settings') inner = settingsSheet();
+  else if (s.type === 'ai') inner = aiSheet();
   else if (s.type === 'note') { const n = db.notes[s.id]; if (!n || n.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = noteSheet(n); }
   else if (s.type === 'image') inner = imageSheet(s);
   else if (s.type === 'list') { const l = db.lists[s.id]; if (!l || l.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = listSheet(l); }
@@ -2087,7 +2363,7 @@ function noteMeta(n) {
 function noteSheet(n) {
   if (hasInk(n)) return inkSheet(n);
   return `<div class="writer" role="dialog" aria-label="Note" style="--npage:${noteColor(n)}">
-    <div class="bar"><button class="ib" data-act="close-sheet" aria-label="Back">${I.l}</button><span class="meta" id="n-meta">${noteMeta(n)}</span><button class="ib" data-act="del-note" aria-label="Delete note">${I.trash}</button></div>
+    <div class="bar"><button class="ib" data-act="close-sheet" aria-label="Back">${I.l}</button><span class="meta" id="n-meta">${noteMeta(n)}</span><span style="display:flex;gap:4px">${gemOn() ? `<button class="ib ai" data-act="ai-note" aria-label="Turn this note into tasks with Gemini" title="Tasks from this note">${SPARK}</button>` : ''}<button class="ib" data-act="del-note" aria-label="Delete note">${I.trash}</button></span></div>
     ${noteToolsHTML(n)}
     <div class="body" id="n-body">
       <textarea id="n-title" class="wt" rows="1" dir="auto" placeholder="Title" aria-label="Title">${esc(n.title || '')}</textarea>
@@ -2138,6 +2414,14 @@ function settingsSheet() {
     <div class="field"><span class="lb">Data file</span><span style="font-size:14px">Drive › Zero › zero-data.json</span></div></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px"><button class="btn" data-act="sync-now">${I.sync} Sync now</button>${folderId ? `<a class="btn" style="text-decoration:none" target="_blank" rel="noopener" href="https://drive.google.com/drive/folders/${esc(folderId)}">Open in Drive</a>` : '<span></span>'}</div>`)}
   ${cals.length ? sec('Calendars shown', `<div class="card">${cals.filter(c => c.selected).map(c => `<div class="field"><span class="lb" style="display:flex;align-items:center;gap:8px;color:var(--tx);min-width:0"><i style="width:8px;height:8px;border-radius:4px;background:${esc(c.color || '#7AA2FF')};flex-shrink:0"></i><span dir="auto" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.name)}</span></span><button class="sw blue ${hidden.includes(c.id) ? '' : 'on'}" data-act="cal-toggle" data-id="${esc(c.id)}" role="switch" aria-checked="${!hidden.includes(c.id)}" aria-label="Show ${esc(c.name)}"></button></div>`).join('')}</div>`) : ''}
+  ${sec('Google Tasks', `<div class="card"><div class="field"><span class="lb" style="color:var(--tx)">Sync with Google Tasks</span><button class="sw blue ${gtOn() ? 'on' : ''}" data-act="gt-toggle" role="switch" aria-checked="${gtOn()}" aria-label="Sync with Google Tasks"></button></div>
+    ${gtOn() ? `<div class="field"><span class="lb">Status</span><span style="font-size:14px;text-align:end">${gtStatusHTML()}</span></div>` : ''}</div>
+    <p class="mut" style="margin:10px 2px 0;font-size:13px;line-height:1.6">Two-way with your “My Tasks” list: tasks you add here appear in Google Tasks, and tasks added there — by you, Gemini or “Hey Google” — appear here. Ticking, dates and deleting sync both ways. Add #housing, #dorba… to a Google task to file it in that section.</p>
+    ${gtOn() ? `<button class="btn full" style="margin-top:10px" data-act="gt-now">${I.sync} Sync Google Tasks now</button>` : ''}`)}
+  ${sec('Gemini', `<div class="card"><div class="field"><label for="gem-key">API key</label><input id="gem-key" type="password" autocomplete="off" spellcheck="false" placeholder="${gemOn() ? '•••••••• saved' : 'Paste your key'}" style="text-align:end"></div>
+    <div class="field"><span class="lb">Status</span><span style="font-size:14px">${gemOn() ? 'Ready · ' + esc(db.prefs.geminiModel || GEM_MODELS[0]) : 'Not set'}</span></div></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px"><button class="btn" data-act="gem-save">Save key</button>${gemOn() ? '<button class="btn" data-act="gem-clear">Remove key</button>' : '<a class="btn" style="text-decoration:none" target="_blank" rel="noopener" href="https://aistudio.google.com/apikey">Get a free key</a>'}</div>
+    <p class="mut" style="margin:10px 2px 0;font-size:13px;line-height:1.6">With a key, ${SPARK} buttons appear: turn any text or note into tasks, plan a project’s stages, and read your Review numbers. Text is sent to Google only when you press one. The key is kept in your private data file in Drive, so you enter it once.</p>`)}
   ${NATIVE ? sec('Home screen', `<button class="btn full" data-act="pin-widget">Add the widget to your home screen</button><p class="mut" style="margin:10px 0 0;font-size:13px;line-height:1.6">Shows today's events and urgent tasks. Long-press the app icon for quick actions.</p>`) : sec('Install', `${/Android/i.test(navigator.userAgent) ? `<a class="btn full" style="text-decoration:none;margin-bottom:10px" href="${APK_URL}">Download the Android app (with widget)</a>` : ''}` + (deferredPrompt ? '<button class="btn full" data-act="install">Install Zerodocs control on this device</button>' : '<p class="mut" style="margin:0;font-size:13px;line-height:1.6">Chrome on Android: menu ⋮ › Add to Home screen / Install app. Chrome on Mac: the install icon in the address bar, or menu › Cast, save and share › Install page as app.</p>'))}
   ${sec('Quick add tips', `<p class="mut" style="margin:0;font-size:13px;line-height:1.8" dir="auto">غداً · بعد غد · الخميس · 15/11 · بعد 3 أيام · ٤م · 16:30 · عاجل أو ! · #مشروع · كل شهر / كل أسبوع / كل يوم<br>Sections: #housing #zerodocs #dorba #outsource #personal (or #سكن #دربة #شخصي). Inside a section tab, new tasks go to that section automatically.<br>Start with @ (or اجتماع + time) to create a Google Calendar event.<br>Press N on a keyboard to jump to quick add.</p>`)}
   <button class="btn danger full" style="margin-top:26px" data-act="signout">Sign out on this device</button>`;
@@ -2203,6 +2487,22 @@ document.addEventListener('click', e => {
     case 'save-md': saveReviewToDrive(); break;
     case 'dl-csv': { const [f, to] = reviewRange(); download(`zero-review-${f}-to-${to}.csv`, buildCSV(reviewData(f, to)), 'text/csv;charset=utf-8'); break; }
     case 'dl-json': { const [f, to] = reviewRange(); download(`zero-review-${f}-to-${to}.json`, buildJSON(reviewData(f, to)), 'application/json'); break; }
+    case 'gt-toggle': {
+      const on = !gtOn(); db.prefs = { ...db.prefs, gtasksOn: on, updatedAt: now() }; save();
+      if (on) { LS.del('gtSince'); gtLast = 0; toast('Google Tasks sync is on'); gtSync(true).then(ch => { if (ch) scheduleSync(800); }); }
+      renderSheet(); break;
+    }
+    case 'gt-allow': connect(true); break;
+    case 'gt-now': gtLast = 0; gtSync(true).then(ch => { if (ch) scheduleSync(800); toast(gtErr ? 'Google Tasks: not synced' : 'Google Tasks synced'); }); renderSheet(); break;
+    case 'gem-save': { const i = $('#gem-key'); const v = i ? i.value.trim() : ''; if (!v) { toast('Paste the key first'); break; } db.prefs = { ...db.prefs, geminiKey: v, updatedAt: now() }; save(); toast('Checking the key…');
+      gemini('Return JSON: {"ok":true}').then(() => { toast('Gemini is ready'); renderSheet(); renderMain(); }).catch(e => { gemFail(e); renderSheet(); }); renderSheet(); break; }
+    case 'gem-clear': db.prefs = { ...db.prefs, geminiKey: '', updatedAt: now() }; save(); renderSheet(); renderMain(); toast('Key removed'); break;
+    case 'ai-qa': { const i = document.getElementById(el.dataset.for); const v = i ? i.value : ''; const ctx = qaCtx(); aiTasksFrom(v, ctx); if (i && v.trim()) { i.value = ''; ui.qa = ''; } break; }
+    case 'ai-note': { const n = ui.sheet && db.notes[ui.sheet.id]; if (!n) break; richSave(); const txt = [n.title, n.text].filter(Boolean).join('\n'); cleanupNote(); aiTasksFrom(txt, {}); break; }
+    case 'ai-plan': { const p = db.projects[ui.projectId]; if (p) aiPlanProject(p); break; }
+    case 'ai-review': aiReview(); break;
+    case 'ai-tog': { const a = ui.ai; if (!a) break; const arr = a.kind === 'plan' ? a.stages : a.items; const x = arr && arr[+el.dataset.i]; if (x) { x.on = !x.on; renderSheet(); } break; }
+    case 'ai-add': aiApply(); break;
     case 'sync-now': if (!authed()) { connect(false); } else { sync(); refreshMonth(ui.month, true); loadCals().catch(() => { }); toast('Syncing…'); } break;
     case 'signout': signOut(); break;
     case 'cal-toggle': { const h = new Set(db.prefs.hiddenCals || []); h.has(el.dataset.id) ? h.delete(el.dataset.id) : h.add(el.dataset.id); db.prefs = { ...db.prefs, hiddenCals: [...h], updatedAt: now() }; save(); renderSheet(); renderMain(); refreshMonth(ui.month, true); break; }
@@ -2409,6 +2709,8 @@ document.addEventListener('visibilitychange', () => {
   if (authed()) { sync(); refreshMonth(ui.month, true); }
 });
 setInterval(() => { if (document.visibilityState === 'visible' && authed()) { refreshMonth(ui.month, true); if (LS.get('dirty', false)) sync(); } }, 5 * 60e3);
+/* pick up tasks added in Google Tasks (or by Gemini / Google Assistant) while the app is open */
+setInterval(() => { if (document.visibilityState === 'visible' && gtOn() && authed()) gtSync(true).then(ch => { if (ch) scheduleSync(800); }); }, 2 * 60e3);
 
 /* board: drag cards between columns */
 document.addEventListener('dragstart', e => { const c = e.target.closest && e.target.closest('.kcard'); if (!c) return; e.dataTransfer.setData('text/plain', c.dataset.kid); e.dataTransfer.effectAllowed = 'move'; c.classList.add('drag'); });

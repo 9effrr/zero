@@ -20,6 +20,7 @@ object Zero {
         DRIVE_SCOPE,
         "https://www.googleapis.com/auth/calendar.events",
         "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+        "https://www.googleapis.com/auth/tasks",
         "https://www.googleapis.com/auth/userinfo.email",
         "openid"
     )
