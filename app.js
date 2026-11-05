@@ -1243,14 +1243,14 @@ const noteColor = n => (n && n.color) || NOTE_COLORS[0][0];
 function richParse(html) {
   const t = document.createElement('template'); t.innerHTML = html || '';
   const blocks = []; let cur = null;
-  const open = tag => { cur = { tag, segs: [] }; blocks.push(cur); };
+  const open = (tag, dir) => { cur = { tag, dir: dir === 'rtl' || dir === 'ltr' ? dir : null, segs: [] }; blocks.push(cur); };
   const walk = (node, f) => {
     node.childNodes.forEach(ch => {
       if (ch.nodeType === 3) { if (!cur) open('p'); if (ch.nodeValue) cur.segs.push({ t: ch.nodeValue.replace(/ /g, ' '), b: f.b, l: f.l }); return; }
       if (ch.nodeType !== 1) return;
       const tag = ch.tagName.toLowerCase();
       if (tag === 'br') { if (ch.nextSibling) open('p'); else if (!cur) open('p'); return; }
-      if (/^(h1|h2|h3|p|div|li|blockquote)$/.test(tag)) { open(tag === 'h1' ? 'h1' : tag === 'h2' || tag === 'h3' ? 'h2' : 'p'); walk(ch, f); cur = null; return; }
+      if (/^(h1|h2|h3|p|div|li|blockquote)$/.test(tag)) { open(tag === 'h1' ? 'h1' : tag === 'h2' || tag === 'h3' ? 'h2' : 'p', (ch.getAttribute('dir') || '').toLowerCase()); walk(ch, f); cur = null; return; }
       const fw = ch.style && ch.style.fontWeight;
       const nf = { b: f.b || tag === 'b' || tag === 'strong' || fw === 'bold' || +fw >= 600, l: f.l || (ch.classList && ch.classList.contains('l')) || (+fw && +fw <= 300) };
       if (nf.b && nf.l) nf.l = false;
@@ -1264,7 +1264,7 @@ function richOut(blocks) {
   const html = blocks.map(bl => {
     const merged = [];
     bl.segs.forEach(s => { const last = merged[merged.length - 1]; if (last && last.b === s.b && last.l === s.l) last.t += s.t; else merged.push({ ...s }); });
-    return `<${bl.tag}>${merged.map(s => s.b ? `<b>${esc(s.t)}</b>` : s.l ? `<span class="l">${esc(s.t)}</span>` : esc(s.t)).join('')}</${bl.tag}>`;
+    return `<${bl.tag}${bl.dir ? ` dir="${bl.dir}"` : ''}>${merged.map(s => s.b ? `<b>${esc(s.t)}</b>` : s.l ? `<span class="l">${esc(s.t)}</span>` : esc(s.t)).join('')}</${bl.tag}>`;
   }).join('');
   const text = blocks.map(bl => bl.segs.map(s => s.t).join('')).join('\n');
   return { html, text };
@@ -1273,7 +1273,8 @@ const textToHtml = txt => String(txt || '').split('\n').map(l => `<p>${esc(l)}</
 /* what goes into the editor: clean subset, with a <br> in empty blocks so the caret can sit there */
 function richForEditor(n) {
   const h = richOut(richParse(n.html ? n.html : textToHtml(n.text))).html || '<p></p>';
-  return h.replace(/<(p|h1|h2)><\/\1>/g, '<$1><br></$1>');
+  /* every block finds its own direction (Arabic right, English left) unless one was set */
+  return h.replace(/<(p|h1|h2)( dir="(?:rtl|ltr)")?><\/\1>/g, '<$1$2><br></$1>').replace(/<(p|h1|h2)>/g, '<$1 dir="auto">');
 }
 function richSave() {
   const ed = $('#n-rich'); const n = ui.sheet && db.notes[ui.sheet.id]; if (!ed || !n) return;
@@ -1287,6 +1288,20 @@ function richEnsureBlock() {
   if (!ed.firstChild) { ed.innerHTML = '<p><br></p>'; return; }
   /* loose text typed straight into the editor goes into a paragraph */
   [...ed.childNodes].forEach(ch => { if (ch.nodeType === 3 || (ch.nodeType === 1 && !/^(P|H1|H2|DIV)$/.test(ch.tagName))) { const p = document.createElement('p'); ch.replaceWith(p); p.appendChild(ch); } });
+  [...ed.children].forEach(b => { if (!b.getAttribute('dir')) b.setAttribute('dir', 'auto'); });
+}
+/* writing direction of the paragraphs under the cursor: auto (follows the language), ltr or rtl */
+function richDir(d) {
+  const ed = $('#n-rich'); const sel = getSelection(); if (!ed) return;
+  let bls = [];
+  if (sel.rangeCount && ed.contains(sel.getRangeAt(0).commonAncestorContainer)) {
+    const r = sel.getRangeAt(0);
+    bls = richBlocksIn(r);
+    if (!bls.length) { let n = r.startContainer; if (n.nodeType === 3) n = n.parentElement; while (n && n.parentElement !== ed) n = n.parentElement; if (n) bls = [n]; }
+  }
+  if (!bls.length) bls = [...ed.children];
+  bls.forEach(b => b.setAttribute('dir', d));
+  richSave(); richToolsState();
 }
 function richBlocksIn(r) {
   const ed = $('#n-rich');
@@ -1329,7 +1344,10 @@ function richWeight(w) {
 function richBlock(tag) {
   const ed = $('#n-rich'); if (!ed) return;
   ed.focus();
+  const sel = getSelection(); let keep = null;
+  if (sel.rangeCount) { let n = sel.anchorNode; if (n && n.nodeType === 3) n = n.parentElement; const b = n && n.closest && n.closest('#n-rich > *'); if (b) keep = b.getAttribute('dir'); }
   document.execCommand('formatBlock', false, tag);
+  if (keep && keep !== 'auto' && sel.rangeCount) richBlocksIn(sel.getRangeAt(0)).forEach(b => { if (!b.getAttribute('dir')) b.setAttribute('dir', keep); });
   richEnsureBlock(); richSave(); richToolsState();
 }
 function richToolsState() {
@@ -1339,10 +1357,12 @@ function richToolsState() {
   const blk = n.closest('h1,h2') ? n.closest('h1,h2').tagName.toLowerCase() : 'p';
   const w = n.closest('b,strong') ? 'bold' : n.closest('span.l') ? 'light' : 'regular';
   tb.querySelectorAll('[data-fmt]').forEach(b => b.classList.toggle('on', b.dataset.fmt === blk || b.dataset.fmt === w));
+  const bl = n.closest('#n-rich > *'); const d = (bl && bl.getAttribute('dir')) || 'auto';
+  tb.querySelectorAll('[data-dir]').forEach(b => b.classList.toggle('on', b.dataset.dir === d));
 }
 document.addEventListener('selectionchange', () => { if ($('#n-rich')) richToolsState(); });
 /* keep the text selected when a format button is pressed */
-document.addEventListener('pointerdown', e => { if (e.target.closest && e.target.closest('#ntools [data-fmt]')) e.preventDefault(); });
+document.addEventListener('pointerdown', e => { if (e.target.closest && e.target.closest('#ntools [data-fmt], #ntools [data-dir]')) e.preventDefault(); });
 document.addEventListener('paste', e => {
   if (!e.target.closest || !e.target.closest('#n-rich')) return;
   e.preventDefault();
@@ -1354,6 +1374,7 @@ function noteToolsHTML(n) {
   return `<div class="ntools" id="ntools" role="toolbar" aria-label="Formatting">
     <div class="ng"><button data-act="nfmt" data-fmt="h1" aria-label="Heading 1">H1</button><button data-act="nfmt" data-fmt="h2" aria-label="Heading 2">H2</button><button data-act="nfmt" data-fmt="p" aria-label="Body text">Text</button></div>
     <div class="ng"><button data-act="nfmt" data-fmt="bold" aria-label="Bold"><b>B</b></button><button data-act="nfmt" data-fmt="regular" aria-label="Regular">Aa</button><button data-act="nfmt" data-fmt="light" aria-label="Light"><span style="font-weight:300">Aa</span></button></div>
+    <div class="ng ndir"><button data-act="ndir" data-dir="auto" aria-label="Direction follows the language" title="Auto: follows the language">Auto</button><button data-act="ndir" data-dir="ltr" aria-label="Left to right" title="Left to right (English)"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h10M4 11h7M4 16h13M17 13l3 3-3 3"/></svg></button><button data-act="ndir" data-dir="rtl" aria-label="Right to left" title="Right to left (Arabic)"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6H10M20 11h-7M20 16H7M7 13l-3 3 3 3"/></svg></button></div>
     <button class="ncol" data-act="ncolors" aria-label="Page colour" aria-expanded="${!!ui.nColors}"><i style="background:${c}"></i></button>
   </div>
   ${ui.nColors ? `<div class="nswatch" role="group" aria-label="Page colour">${NOTE_COLORS.map(([v, nm]) => `<button data-act="ncolor" data-v="${v}" aria-label="${nm}" aria-pressed="${c === v}" class="${c === v ? 'on' : ''}"><i style="background:${v}"></i><span>${nm}</span></button>`).join('')}</div>` : ''}`;
@@ -2218,6 +2239,7 @@ document.addEventListener('click', e => {
       const vals = {}; Object.entries(l.vals || {}).forEach(([k, x]) => { if (v === 'num' ? typeof x === 'number' : typeof x === 'boolean') vals[k] = x; });
       if (Object.keys(l.vals || {}).length && Object.keys(vals).length < Object.keys(l.vals || {}).length && !confirm('Days recorded with the other type will be cleared. Switch?')) break;
       updList(l, { htype: v, vals }); renderSheet(); renderMain(); break; }
+    case 'ndir': richDir(el.dataset.dir); break;
     case 'nfmt': { const f = el.dataset.fmt; if (f === 'h1' || f === 'h2' || f === 'p') richBlock(f); else richWeight(f); richToolsState(); break; }
     case 'ncolors': ui.nColors = !ui.nColors; renderSheet(); break;
     case 'ncolor': { const n = ui.sheet && db.notes[ui.sheet.id]; if (n) { n.color = el.dataset.v === NOTE_COLORS[0][0] ? null : el.dataset.v; n.updatedAt = now(); save(); ui.nColors = false; renderSheet(); } break; }
