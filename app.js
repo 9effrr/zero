@@ -627,7 +627,7 @@ async function gemini(prompt, extra = []) {
       body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }, ...extra] }], generationConfig: { responseMimeType: 'application/json', temperature: 0.3 } })
     });
     if (r.status === 404) { last = new Error('model ' + m); continue; }
-    if (!r.ok) { const t = await r.text(); const e = new Error(r.status + ' ' + t.slice(0, 300)); e.status = r.status; e.code = r.status === 429 ? 'limit' : /API_KEY|API key/i.test(t) ? 'key' : 'err'; throw e; }
+    if (!r.ok) { const t = await r.text(); const e = new Error(r.status + ' ' + t.slice(0, 300)); e.status = r.status; e.code = r.status === 429 ? 'limit' : /API_KEY|API key/i.test(t) ? 'key' : 'err'; try { e.msg = JSON.parse(t).error.message; } catch { e.msg = 'error ' + r.status; } throw e; }
     if (db.prefs.geminiModel !== m) { db.prefs.geminiModel = m; }
     const j = await r.json();
     const txt = ((j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || []).map(p => p.text || '').join('').trim();
@@ -639,7 +639,7 @@ async function gemini(prompt, extra = []) {
 function gemFail(e) {
   console.warn('gemini', e);
   const c = e && e.code;
-  toast(c === 'nokey' ? 'Add your Gemini key in Settings first' : c === 'key' ? 'Gemini didn’t accept the key — check it in Settings' : c === 'limit' ? 'Gemini’s free limit is reached for now — try again in a minute' : !navigator.onLine ? 'You’re offline' : 'Gemini couldn’t answer — try again');
+  toast(c === 'nokey' ? 'Add your Gemini key in Settings first' : c === 'key' ? 'Gemini didn’t accept the key — check it in Settings' : c === 'limit' ? 'Gemini’s free limit is reached for now — try again in a minute' : !navigator.onLine ? 'You’re offline' : 'Gemini couldn’t answer' + (e && e.msg ? ': ' + String(e.msg).slice(0, 110) : ' — try again'));
 }
 function gemContext() {
   const d = new Date();
@@ -847,6 +847,30 @@ function removeClip(n, id) {
   if (id.startsWith('l_')) IDB.del(id);
   else if (authed() && navigator.onLine) gfetch(`${DRV}/files/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) }).catch(() => { });
 }
+/* Gemini takes WAV/MP3/AAC/OGG/FLAC but not the WebM that browsers record, so recordings are turned into
+   16 kHz mono WAV here, in parts of up to 5 minutes (each part stays well under Gemini's 20 MB request limit). */
+function wavEncode(f32, rate) {
+  const n = f32.length, b = new ArrayBuffer(44 + n * 2), v = new DataView(b);
+  const w = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) { const x = Math.max(-1, Math.min(1, f32[i])); v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true); }
+  return new Blob([b], { type: 'audio/wav' });
+}
+async function audioToWavParts(blob, maxSec = 300) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ac = new AC();
+  let dec;
+  try { dec = await ac.decodeAudioData(await blob.arrayBuffer()); } finally { try { ac.close(); } catch { } }
+  const rate = 16000, len = Math.max(1, Math.ceil(dec.duration * rate));
+  const off = new OfflineAudioContext(1, len, rate);
+  const src = off.createBufferSource(); src.buffer = dec; src.connect(off.destination); src.start();
+  const pcm = (await off.startRendering()).getChannelData(0);
+  const per = maxSec * rate, parts = [];
+  for (let i = 0; i < pcm.length; i += per) parts.push(wavEncode(pcm.subarray(i, Math.min(pcm.length, i + per)), rate));
+  return parts;
+}
+const b64 = blob => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.onerror = rej; fr.readAsDataURL(blob); });
 const txBusy = {};
 async function transcribe(noteId, clipId) {
   if (!gemOn()) { gemFail({ code: 'nokey' }); return; }
@@ -854,11 +878,18 @@ async function transcribe(noteId, clipId) {
   txBusy[clipId] = true; if (ui.sheet && ui.sheet.type === 'note') { richSave(); renderSheet(); }
   try {
     const b = await audBlob(clipId); if (!b) throw Object.assign(new Error('no audio'), { code: 'err' });
-    const data = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.onerror = rej; fr.readAsDataURL(b); });
-    const mime = ((c.mime || b.type || 'audio/webm').split(';')[0]) || 'audio/webm';
-    const out = await gemini(`Transcribe this voice note exactly as spoken. It may be in Arabic (any dialect, write it as said), English, or a mix — keep each part in its own language. Add punctuation and split into short paragraphs where the speaker pauses or changes topic. Do not summarise, translate or add anything.
-Return JSON: {"text": string}`, [{ inline_data: { mime_type: mime, data } }]);
-    const txt = String(out.text || '').trim();
+    let parts;
+    try { parts = await audioToWavParts(b); }
+    catch (e) { console.warn('wav', e); parts = [b]; } /* fall back to the file as recorded */
+    const texts = [];
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i];
+      const mime = (p.type || c.mime || 'audio/wav').split(';')[0];
+      const out = await gemini(`Transcribe this voice note exactly as spoken. It may be in Arabic (any dialect, write it as said), English, or a mix — keep each part in its own language. Add punctuation and split into short paragraphs where the speaker pauses or changes topic. Do not summarise, translate or add anything.${parts.length > 1 ? ` This is part ${i + 1} of ${parts.length} of one recording.` : ''}
+Return JSON: {"text": string}`, [{ inline_data: { mime_type: mime, data: await b64(p) } }]);
+      texts.push(String((out && out.text) || '').trim());
+    }
+    const txt = texts.filter(Boolean).join('\n');
     if (!txt) { toast('Nothing to write out in that recording'); return; }
     const cur = db.notes[noteId]; if (!cur) return;
     if (ui.sheet && ui.sheet.type === 'note' && ui.sheet.id === noteId) richSave();
