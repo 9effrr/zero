@@ -292,6 +292,24 @@ class MainActivity : ComponentActivity() {
             InkActivity.ack(this@MainActivity, id, updatedAt.toLongOrNull() ?: return)
         }
 
+        /* share a note's text, or a recording, through Android's share sheet */
+        @JavascriptInterface fun shareText(title: String, text: String) = runOnUiThread {
+            val i = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_SUBJECT, title).putExtra(Intent.EXTRA_TEXT, text)
+            try { startActivity(Intent.createChooser(i, "Share note")) } catch (e: Exception) { toast("Couldn't share") }
+        }
+
+        @JavascriptInterface fun shareFile(name: String, mime: String, data: String) {
+            try {
+                val dir = java.io.File(cacheDir, "share").apply { mkdirs(); listFiles()?.forEach { it.delete() } }
+                val safe = name.replace(Regex("[\\\\/:*?\"<>|]"), "_").ifBlank { "Voice note.wav" }
+                val f = java.io.File(dir, safe)
+                f.writeBytes(android.util.Base64.decode(data, android.util.Base64.DEFAULT))
+                val uri = androidx.core.content.FileProvider.getUriForFile(this@MainActivity, "$packageName.files", f)
+                val i = Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                runOnUiThread { try { startActivity(Intent.createChooser(i, "Share recording").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) } catch (e: Exception) { toast("Couldn't share") } }
+            } catch (e: Exception) { runOnUiThread { toast("Couldn't share this recording") } }
+        }
+
         @JavascriptInterface fun version(): String = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
     }
 }

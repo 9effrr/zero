@@ -813,3 +813,7 @@ a{color:var(--sand2)}
 .pill.ai{color:var(--sand)}
 .vtag{display:inline-flex;align-items:center;gap:2px;margin-inline-end:6px;vertical-align:-3px;color:var(--sand)}
 .vtag svg{width:13px;height:13px}
+
+/* v19: single text-direction button, share */
+.ntools .ndir1{width:44px;height:40px;border-radius:12px;border:0;background:rgba(255,255,255,.05);color:var(--tx2);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.ntools .ndir1:active{background:var(--sand);color:var(--ink)}

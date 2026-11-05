@@ -53,6 +53,9 @@ function toast(msg) {
 }
 
 const I = {
+  share: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/></svg>',
+  dirLtr: '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 10v5h2V4h2v11h2V4h2V2H9C6.79 2 5 3.79 5 6s1.79 4 4 4zm12 8l-4-4v3H5v2h12v3l4-4z"/></svg>',
+  dirRtl: '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M10 10v5h2V4h2v11h2V4h2V2h-8C7.79 2 6 3.79 6 6s1.79 4 4 4zm-2 7v-3l-4 4 4 4v-3h12v-2H8z"/></svg>',
   mic: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>',
   plus: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
   plusS: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
@@ -273,6 +276,8 @@ async function gfetch(url, opts = {}, retried = false) {
   return r;
 }
 async function afterAuth() {
+  /* Gemini was removed: forget the key everywhere */
+  if (db.prefs && ('geminiKey' in db.prefs || 'geminiModel' in db.prefs || 'autoTx' in db.prefs)) { const { geminiKey, geminiModel, autoTx, ...rest } = db.prefs; db.prefs = { ...rest, updatedAt: now() }; save(); }
   renderMain();
   try {
     if (!LS.get('email', '')) {
@@ -610,196 +615,9 @@ function gtStatusHTML() {
   return t ? 'Synced ' + esc(new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })) : 'Waiting…';
 }
 
-/* ---------------- Gemini ----------------
-   Your own Gemini API key (Google AI Studio), kept in your private data file in Drive.
-   Text goes to Google only when you press a ✦ button. */
-const GEM_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash']; /* last resort; the real list comes from your key */
-const gemKey = () => (db.prefs.geminiKey || '').trim();
-const gemOn = () => !!gemKey();
-const SPARK = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5c.4 4.9 4.6 9.1 9.5 9.5-4.9.4-9.1 4.6-9.5 9.5-.4-4.9-4.6-9.1-9.5-9.5 4.9-.4 9.1-4.6 9.5-9.5z"/></svg>';
-/* Model names change often, so ask Google which models this key can use and pick the newest general "flash" one. */
-let gemList = null;
-const gemVer = n => { const m = n.match(/(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : 0; };
-async function gemModels(key) {
-  if (gemList) return gemList;
-  try {
-    const out = []; let page = '';
-    do {
-      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200${page ? '&pageToken=' + encodeURIComponent(page) : ''}`, { headers: { 'x-goog-api-key': key } });
-      if (!r.ok) { const t = await r.text(); if (/API_KEY|API key/i.test(t)) { const e = new Error(t.slice(0, 200)); e.code = 'key'; try { e.msg = JSON.parse(t).error.message; } catch { } throw e; } break; }
-      const j = await r.json();
-      (j.models || []).forEach(m => { if ((m.supportedGenerationMethods || []).includes('generateContent')) out.push(String(m.name || '').replace(/^models\//, '')); });
-      page = j.nextPageToken || '';
-    } while (page);
-    const bad = /tts|image|live|embed|robotics|computer|aqa|learnlm|gemma|imagen|veo|audio|native|thinking|transcribe|translate|nano/i;
-    const score = n => (/flash/i.test(n) ? 1000 : /pro/i.test(n) ? 500 : 0) + gemVer(n) * 10 - (/lite/i.test(n) ? 3 : 0) - (/preview|exp/i.test(n) ? 6 : 0) + (/latest/i.test(n) ? 1 : 0);
-    gemList = out.filter(n => /^gemini/i.test(n) && !bad.test(n)).sort((a, b) => score(b) - score(a)).slice(0, 5);
-  } catch (e) { if (e.code === 'key') throw e; console.warn('gemini models', e); gemList = []; }
-  return gemList;
-}
-async function gemini(prompt, extra = []) {
-  const key = gemKey(); if (!key) { const e = new Error('nokey'); e.code = 'nokey'; throw e; }
-  const found = await gemModels(key);
-  const models = [db.prefs.geminiModel, ...found, ...GEM_MODELS].filter((m, i, a) => m && a.indexOf(m) === i);
-  let last = null; const tried = {};
-  for (let k = 0; k < models.length; k++) {
-    const m = models[k];
-    let r;
-    try {
-      r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-        body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }, ...extra] }], generationConfig: { responseMimeType: 'application/json', temperature: 0.3 } })
-      });
-    } catch (e) { const x = new Error('network'); x.code = 'err'; x.msg = 'network error'; throw x; }
-    if (!r.ok) {
-      const t = await r.text(); let msg = 'error ' + r.status; try { msg = JSON.parse(t).error.message || msg; } catch { }
-      const e = new Error(r.status + ' ' + t.slice(0, 300)); e.status = r.status; e.msg = msg;
-      e.code = r.status === 429 ? 'limit' : /API_KEY_INVALID|API key not valid|API key expired/i.test(t) ? 'key' : 'err';
-      /* this key's quota for this model is used up for now: every model has its own quota, so try the next one */
-      if (r.status === 429) { last = e; continue; }
-      /* this model is busy right now (high demand / overloaded): wait a moment, try once more, then move to another model */
-      if (r.status === 503 || r.status === 500 || r.status === 504 || /high demand|overloaded|unavailable|try again later/i.test(msg)) {
-        e.code = 'busy'; last = e;
-        if (!tried[m]) { tried[m] = 1; await new Promise(z => setTimeout(z, 1500)); models.splice(models.indexOf(m) + 1, 0, m); }
-        continue;
-      }
-      /* this model isn't available to this key (retired, renamed, no access, can't take audio): try the next one */
-      if (e.code !== 'key' && (r.status === 404 || ((r.status === 400 || r.status === 403) && /model|not found|not supported|no longer|access|unsupported|mime|modality/i.test(msg)))) {
-        if (db.prefs.geminiModel === m) db.prefs.geminiModel = null;
-        last = e; continue;
-      }
-      throw e;
-    }
-    if (db.prefs.geminiModel !== m) { db.prefs.geminiModel = m; persist(); }
-    const j = await r.json();
-    const txt = ((j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || []).map(p => p.text || '').join('').trim();
-    try { return JSON.parse(txt.replace(/^```(?:json)?\s*|\s*```$/g, '')); }
-    catch { const e = new Error('bad json'); e.code = 'err'; e.msg = 'unexpected answer'; throw e; }
-  }
-  throw last || Object.assign(new Error('no model'), { code: 'err', msg: 'no Gemini model is available to this key' });
-}
-function gemFail(e) {
-  console.warn('gemini', e);
-  const c = e && e.code;
-  toast(c === 'nokey' ? 'Add your Gemini key in Settings first' : c === 'key' ? 'Gemini didn’t accept the key — check it in Settings' : c === 'limit' ? 'Your Gemini API key reached its usage limit for now — try again later, or turn on billing for the key (see Settings)' : c === 'busy' ? 'Gemini is busy right now — your recording is saved, try ✦ again in a minute' : !navigator.onLine ? 'You’re offline' : 'Gemini couldn’t answer' + (e && e.msg ? ': ' + String(e.msg).slice(0, 110) : ' — try again'));
-}
-function gemContext() {
-  const d = new Date();
-  return `Today is ${today()} (${d.toLocaleDateString('en-GB', { weekday: 'long' })}), time zone ${TZ}.
-Sections (use the id): ${AREAS.map(a => `${a.id} = ${a.name}`).join(', ')}.
-Open projects: ${projects().filter(p => !p.done).map(p => `"${p.name}"${p.areaId ? ' (' + p.areaId + ')' : ''}`).join(', ') || 'none'}.`;
-}
-const AI_TASK_SHAPE = `Return JSON: {"tasks":[{"title":string,"due":"YYYY-MM-DD" or null,"time":"HH:MM" or null,"urgent":boolean,"area":section id or null,"project":exact name from the open projects list or null,"notes":string or null}]}.
-Keep each title short and in the same language the user wrote in. Resolve relative dates (tomorrow, Thursday, غداً, الخميس) against today. Only set a project when the text clearly refers to one of the listed projects. Do not invent tasks that are not in the text.`;
-function aiOpen(s) { ui.ai = s; openSheet({ type: 'ai' }); }
-async function aiRun(kind, prompt, ctx) {
-  aiOpen({ kind, busy: true, ctx });
-  try {
-    const out = await gemini(prompt);
-    if (!ui.sheet || ui.sheet.type !== 'ai') return;
-    if (kind === 'tasks') { const ts = (out.tasks || []).filter(x => x && (x.title || '').trim()).slice(0, 40); ui.ai = { kind, ctx, items: ts.map(x => ({ ...x, on: true })) }; }
-    else if (kind === 'plan') { const st = (out.stages || []).filter(x => x && (x.name || '').trim()).slice(0, 12); ui.ai = { kind, ctx, stages: st.map(x => ({ ...x, on: true, tasks: (x.tasks || []).filter(Boolean).slice(0, 15) })) }; }
-    renderSheet();
-  } catch (e) { gemFail(e); if (ui.sheet && ui.sheet.type === 'ai') closeSheet(); }
-}
-function aiTasksFrom(text, ctx = {}) {
-  if (!gemOn()) { gemFail({ code: 'nokey' }); return; }
-  const t = String(text || '').trim(); if (!t) { toast('Write something first'); return; }
-  aiRun('tasks', `You turn a person's quick text into to-do tasks for their planner.
-${gemContext()}
-${ctx.areaId ? `The user is inside the "${areaOf(ctx.areaId).name}" section; default to it.` : ''}${ctx.projectId && db.projects[ctx.projectId] ? ` The user is inside the project "${db.projects[ctx.projectId].name}"; default to it.` : ''}
-${AI_TASK_SHAPE}
-Text:
-"""${t.slice(0, 8000)}"""`, ctx);
-}
-function aiPlanProject(p) {
-  if (!gemOn()) { gemFail({ code: 'nokey' }); return; }
-  const ts = tasks().filter(t => t.projectId === p.id);
-  aiRun('plan', `You plan projects as a few clear stages with dates, like a simple Gantt chart.
-${gemContext()}
-Project: "${p.name}"${p.brief ? `\nBrief: ${p.brief}` : ''}${p.deadline ? `\nDeadline: ${p.deadline}` : ''}
-Existing stages: ${(p.stages || []).map(s => `"${s.name}" ${s.start || ''}→${s.due || ''}`).join(', ') || 'none'}
-Existing tasks: ${ts.map(t => `"${t.title}"${t.done ? ' (done)' : ''}`).join(', ') || 'none'}
-Suggest the stages that are still missing (do not repeat existing ones), in order, starting from today, ending by the deadline if there is one.
-Return JSON: {"stages":[{"name":string,"start":"YYYY-MM-DD","due":"YYYY-MM-DD","tasks":[string]}]} with 2–6 stages and 2–6 short tasks each, written in the same language as the project name and tasks.`, { projectId: p.id });
-}
-async function aiReview() {
-  if (!gemOn()) { gemFail({ code: 'nokey' }); return; }
-  const [from, to] = reviewRange(); const r = reviewData(from, to); const key = ui.rKey + '|' + from + '|' + to;
-  ui.rAI = { key, busy: true }; renderMain();
-  const data = {
-    range: { from, to, days: r.days }, scope: r.sc.label,
-    done: r.done.length, created: r.created.length, plannedDue: r.planned, plannedDone: r.plannedDone, onTime: r.onTime, doneWithDue: r.withDue.length,
-    doneLate: r.late.length, avgDaysLate: +r.avgLate.toFixed(1), openNow: r.open.length, overdueNow: r.overdue.length, urgentOpen: r.urgentOpen,
-    postponements: r.postponed.length, streakDays: r.streak, activeDays: r.activeDays, busiestWeekday: r.wk, repeatsDone: r.rep.length,
-    bySection: r.by, calendarHours: +r.hours.toFixed(1),
-    doneTitles: r.done.slice(-40).map(l => l.title), overdueTitles: r.overdue.slice(0, 15).map(t => t.title + (t.due ? ' (due ' + t.due + ')' : ''))
-  };
-  try {
-    const out = await gemini(`You are a calm, honest productivity coach looking at someone's planner numbers for a period.
-${gemContext()}
-Data: ${JSON.stringify(data)}
-Write in Arabic if most task titles are Arabic, otherwise English. Be specific, use the numbers, no fluff, no emojis.
-Return JSON: {"summary":"2–3 sentences","wins":[up to 3 short points],"watch":[up to 3 short points],"next":[up to 3 concrete next steps]}`);
-    ui.rAI = { key, ...out };
-  } catch (e) { gemFail(e); ui.rAI = null; }
-  renderMain();
-}
-function aiReviewHTML() {
-  if (!gemOn()) return '';
-  const [from, to] = reviewRange(); const key = ui.rKey + '|' + from + '|' + to; const a = ui.rAI && ui.rAI.key === key ? ui.rAI : null;
-  const list = (h, xs) => xs && xs.length ? `<div class="ai-l"><span class="k">${h}</span><ul>${xs.map(x => `<li dir="auto">${esc(x)}</li>`).join('')}</ul></div>` : '';
-  if (!a) return `<button class="btn ai-btn full" style="margin-top:14px" data-act="ai-review">${SPARK} Read this period with Gemini</button>`;
-  if (a.busy) return `<div class="card ai-card" style="margin-top:14px"><span class="ai-busy">${SPARK} Gemini is reading your numbers…</span></div>`;
-  return `<div class="card ai-card" style="margin-top:14px"><div class="ai-h">${SPARK} Gemini<button class="ib" data-act="ai-review" aria-label="Ask again">${I.sync}</button></div>
-    <p dir="auto">${esc(a.summary || '')}</p>
-    <div class="ai-cols">${list('Going well', a.wins)}${list('Watch', a.watch)}${list('Next', a.next)}</div></div>`;
-}
-function aiSheet() {
-  const a = ui.ai || {};
-  const top = (t) => `<div class="sheet-top"><button class="ib" data-act="close-sheet" aria-label="Close">${I.l}</button><span class="crumb">${SPARK} ${t}</span><span style="width:40px"></span></div>`;
-  if (a.busy) return top('Gemini') + `<div class="ai-wait"><span class="ai-busy">${SPARK} Thinking…</span></div>`;
-  if (a.kind === 'tasks') {
-    const n = (a.items || []).filter(x => x.on).length;
-    return top('Tasks from Gemini') + (a.items && a.items.length ? `<p class="mut" style="font-size:13px;margin:0 2px 10px">Untick anything you don’t want, then add.</p>
-      <div class="card ai-items">${a.items.map((x, i) => { const ar = areaOf(x.area); const pr = x.project && findProject(x.project, x.area); return `<button class="ai-it ${x.on ? 'on' : ''}" data-act="ai-tog" data-i="${i}" aria-pressed="${!!x.on}"><span class="chk">${x.on ? I.check : ''}</span><span class="tx"><span dir="auto">${esc(x.title)}</span><span class="mut">${[x.due ? esc(relDay(x.due)) + (x.time ? ' ' + esc(x.time) : '') : '', ar ? adot(ar) + esc(ar.name) : '', pr ? esc(pr.name) : '', x.urgent ? '<span class="or">Urgent</span>' : ''].filter(Boolean).join(' · ')}</span></span></button>`; }).join('')}</div>
-      <button class="btn pri full" style="margin-top:14px" data-act="ai-add" ${n ? '' : 'disabled'}>Add ${n} task${n === 1 ? '' : 's'}</button>` : '<p class="mut">Gemini didn’t find any tasks in that text.</p>');
-  }
-  if (a.kind === 'plan') {
-    const n = (a.stages || []).filter(x => x.on).length;
-    return top('Plan from Gemini') + (a.stages && a.stages.length ? `<p class="mut" style="font-size:13px;margin:0 2px 10px">Suggested stages with dates and tasks. Untick any you don’t want.</p>
-      <div class="ai-items">${a.stages.map((s, i) => `<button class="card ai-st ${s.on ? 'on' : ''}" data-act="ai-tog" data-i="${i}" aria-pressed="${!!s.on}"><span class="chk">${s.on ? I.check : ''}</span><span class="tx"><b dir="auto">${esc(s.name)}</b><span class="mut num">${s.start ? esc(shortDay(s.start)) : ''} → ${s.due ? esc(shortDay(s.due)) : ''}</span>${(s.tasks || []).length ? `<span class="ai-sub" dir="auto">${s.tasks.map(esc).join(' · ')}</span>` : ''}</span></button>`).join('')}</div>
-      <button class="btn pri full" style="margin-top:14px" data-act="ai-add" ${n ? '' : 'disabled'}>Add ${n} stage${n === 1 ? '' : 's'}</button>` : '<p class="mut">Gemini had no suggestions.</p>');
-  }
-  return top('Gemini');
-}
-function aiApply() {
-  const a = ui.ai; if (!a) return;
-  const okDate = d => /^\d{4}-\d{2}-\d{2}$/.test(d || '') ? d : null;
-  if (a.kind === 'tasks') {
-    let n = 0;
-    a.items.filter(x => x.on).forEach(x => {
-      let areaId = areaOf(x.area) ? x.area : (a.ctx && a.ctx.areaId) || null;
-      let projectId = (a.ctx && a.ctx.projectId) || null;
-      if (x.project) { const f = findProject(x.project, areaId); if (f) projectId = f.id; }
-      if (projectId && db.projects[projectId] && db.projects[projectId].areaId) areaId = db.projects[projectId].areaId;
-      newTask({ title: String(x.title).trim(), due: okDate(x.due), time: /^\d{2}:\d{2}$/.test(x.time || '') ? x.time : null, urgent: !!x.urgent, areaId, projectId, notes: x.notes || '' });
-      n++;
-    });
-    toast(`Added ${n} task${n === 1 ? '' : 's'}`);
-  } else if (a.kind === 'plan') {
-    const p = db.projects[a.ctx.projectId]; if (!p) return;
-    const add = a.stages.filter(s => s.on).map(s => ({ id: uid(), name: String(s.name).trim(), start: okDate(s.start), due: okDate(s.due), tasks: s.tasks || [] }));
-    upd(p, { stages: [...(p.stages || []), ...add.map(({ tasks, ...s }) => s)] });
-    add.forEach(s => s.tasks.forEach(tt => newTask({ title: String(tt).trim(), projectId: p.id, stageId: s.id, areaId: p.areaId || null })));
-    toast(`Added ${add.length} stage${add.length === 1 ? '' : 's'}`);
-  }
-  ui.ai = null; closeSheet(); renderMain();
-}
-
 /* ---------------- voice notes ----------------
    Recordings live with the note (n.audio = [{id, at, dur, mime, local?, tx?}]), are cached on the device
-   and uploaded to Drive › Zero › audio. With a Gemini key, a recording can be written out into the note. */
+   and uploaded to Drive › Zero › audio. */
 let rec = null;
 const fmtDur = s => { s = Math.max(0, Math.round(s || 0)); return Math.floor(s / 60) + ':' + pad(s % 60); };
 const recMime = () => ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/webm'].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) || '';
@@ -835,7 +653,6 @@ async function recSave() {
   n.updatedAt = now(); save();
   if (ui.sheet && ui.sheet.type === 'note' && ui.sheet.id === n.id) { richSave(); renderSheet(); }
   renderMain(); uploadAudio();
-  if (gemOn() && db.prefs.autoTx) transcribe(n.id, id);
 }
 async function audBlob(id) {
   let b = null; try { b = await IDB.get(id); } catch { }
@@ -889,8 +706,7 @@ function removeClip(n, id) {
   if (id.startsWith('l_')) IDB.del(id);
   else if (authed() && navigator.onLine) gfetch(`${DRV}/files/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) }).catch(() => { });
 }
-/* Gemini takes WAV/MP3/AAC/OGG/FLAC but not the WebM that browsers record, so recordings are turned into
-   16 kHz mono WAV here, in parts of up to 5 minutes (each part stays well under Gemini's 20 MB request limit). */
+/* recordings are turned into mono WAV for sharing, so they play on every phone and computer */
 function wavEncode(f32, rate) {
   const n = f32.length, b = new ArrayBuffer(44 + n * 2), v = new DataView(b);
   const w = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
@@ -899,12 +715,12 @@ function wavEncode(f32, rate) {
   for (let i = 0; i < n; i++) { const x = Math.max(-1, Math.min(1, f32[i])); v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true); }
   return new Blob([b], { type: 'audio/wav' });
 }
-async function audioToWavParts(blob, maxSec = 300) {
+async function audioToWavParts(blob, maxSec = 300, rate = 16000) {
   const AC = window.AudioContext || window.webkitAudioContext;
   const ac = new AC();
   let dec;
   try { dec = await ac.decodeAudioData(await blob.arrayBuffer()); } finally { try { ac.close(); } catch { } }
-  const rate = 16000, len = Math.max(1, Math.ceil(dec.duration * rate));
+  const len = Math.max(1, Math.ceil(dec.duration * rate));
   const off = new OfflineAudioContext(1, len, rate);
   const src = off.createBufferSource(); src.buffer = dec; src.connect(off.destination); src.start();
   const pcm = (await off.startRendering()).getChannelData(0);
@@ -913,37 +729,38 @@ async function audioToWavParts(blob, maxSec = 300) {
   return parts;
 }
 const b64 = blob => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.onerror = rej; fr.readAsDataURL(blob); });
-const txBusy = {};
-async function transcribe(noteId, clipId) {
-  if (!gemOn()) { gemFail({ code: 'nokey' }); return; }
-  const n = db.notes[noteId]; const c = n && (n.audio || []).find(x => x.id === clipId); if (!c || txBusy[clipId]) return;
-  txBusy[clipId] = true; if (ui.sheet && ui.sheet.type === 'note') { richSave(); renderSheet(); }
-  try {
-    const b = await audBlob(clipId); if (!b) throw Object.assign(new Error('no audio'), { code: 'err' });
-    let parts;
-    try { parts = await audioToWavParts(b); }
-    catch (e) { console.warn('wav', e); parts = [b]; } /* fall back to the file as recorded */
-    const texts = [];
-    for (let i = 0; i < parts.length; i++) {
-      const p = parts[i];
-      const mime = (p.type || c.mime || 'audio/wav').split(';')[0];
-      const out = await gemini(`Transcribe this voice note exactly as spoken. It may be in Arabic (any dialect, write it as said), English, or a mix — keep each part in its own language. Add punctuation and split into short paragraphs where the speaker pauses or changes topic. Do not summarise, translate or add anything.${parts.length > 1 ? ` This is part ${i + 1} of ${parts.length} of one recording.` : ''}
-Return JSON: {"text": string}`, [{ inline_data: { mime_type: mime, data: await b64(p) } }]);
-      texts.push(String((out && out.text) || '').trim());
-    }
-    const txt = texts.filter(Boolean).join('\n');
-    if (!txt) { toast('Nothing to write out in that recording'); return; }
-    const cur = db.notes[noteId]; if (!cur) return;
-    if (ui.sheet && ui.sheet.type === 'note' && ui.sheet.id === noteId) richSave();
-    const base = cur.html ? cur.html : textToHtml(cur.text);
-    const add = txt.split(/\n+/).map(l => l.trim()).filter(Boolean).map(l => `<p>${esc(l)}</p>`).join('');
-    const r = richOut(richParse(base.replace(/(<p><\/p>)+$/, '') + add));
-    cur.html = r.html; cur.text = r.text.replace(/\n+$/, '');
-    cur.audio = (cur.audio || []).map(x => x.id === clipId ? { ...x, tx: true } : x);
-    cur.updatedAt = now(); save();
-    toast('Written into the note');
-  } catch (e) { gemFail(e); }
-  finally { delete txBusy[clipId]; if (ui.sheet && ui.sheet.type === 'note' && ui.sheet.id === noteId) renderSheet(); renderMain(); }
+/* ---------------- sharing ---------------- */
+const shareName = t => (String(t || '').trim() || 'Voice note').replace(/[\\/:*?"<>|\n\r]+/g, ' ').slice(0, 60).trim();
+async function shareNote(n) {
+  if (ui.sheet && ui.sheet.type === 'note' && ui.sheet.id === n.id) richSave();
+  const title = (n.title || '').trim();
+  const text = [title, (n.text || '').trim()].filter(Boolean).join('\n\n');
+  if (!text && !(n.audio || []).length) { toast('Nothing to share yet'); return; }
+  if (!text) { shareClip(n, n.audio[0].id); return; }
+  if (NATIVE && ZeroNative.shareText) { try { ZeroNative.shareText(title || 'Note', text); return; } catch { } }
+  if (navigator.share) { try { await navigator.share({ title: title || 'Note', text }); } catch (e) { if (e && e.name !== 'AbortError') copyNote(text); } return; }
+  copyNote(text);
+}
+async function copyNote(text) {
+  try { await navigator.clipboard.writeText(text); toast('Note copied — paste it anywhere'); }
+  catch { toast('Couldn’t share this note here'); }
+}
+/* recordings are shared as WAV so they play everywhere (WhatsApp, iPhone, Mac…) */
+async function shareClip(n, id) {
+  const b = await audBlob(id); if (!b) { toast('This recording isn’t on this device yet — try again online'); return; }
+  let f = b;
+  try { f = (await audioToWavParts(b, 36000, 22050))[0]; } catch (e) { console.warn('wav', e); }
+  const ext = f.type === 'audio/wav' ? 'wav' : /mp4|aac/.test(f.type) ? 'm4a' : /ogg/.test(f.type) ? 'ogg' : 'webm';
+  const name = shareName(n.title) + '.' + ext;
+  if (NATIVE && ZeroNative.shareFile) { try { ZeroNative.shareFile(name, f.type || 'audio/*', await b64(f)); return; } catch (e) { console.warn(e); } }
+  const file = new File([f], name, { type: f.type || 'audio/wav' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: shareName(n.title) }); } catch (e) { if (e && e.name !== 'AbortError') dlFile(file); } return; }
+  dlFile(file);
+}
+function dlFile(file) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name;
+  document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+  toast('Saved to Downloads — share it from there');
 }
 function voiceHTML(n) {
   const recHere = rec && rec.noteId === n.id;
@@ -952,7 +769,7 @@ function voiceHTML(n) {
   return `<div class="vlist">${recHere ? `<div class="vrec"><span class="vdot"></span><span>Recording</span><span class="num" id="rec-time">${fmtDur((now() - rec.t0) / 1000)}</span><button class="pill" data-act="rec-stop">Stop</button></div>` : ''}
     ${clips.map(c => `<div class="vclip"><audio data-aud="${esc(c.id)}" controls preload="metadata"></audio>
       <div class="vmeta"><span class="mut num">${fmtDur(c.dur)} · ${esc(new Date(c.at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}${c.local ? ' · saved on this device' : ''}</span>
-      <span class="vact">${gemOn() ? (txBusy[c.id] ? `<span class="ai-busy" style="font-size:12px">${SPARK} Writing…</span>` : `<button class="pill ai" data-act="rec-tx" data-id="${esc(c.id)}">${SPARK} ${c.tx ? 'Write out again' : 'Write out'}</button>`) : ''}<button class="ib" data-act="rec-del" data-id="${esc(c.id)}" aria-label="Delete recording">${I.trash}</button></span></div></div>`).join('')}</div>`;
+      <span class="vact"><button class="ib" data-act="rec-share" data-id="${esc(c.id)}" aria-label="Share recording" title="Share">${I.share}</button><button class="ib" data-act="rec-del" data-id="${esc(c.id)}" aria-label="Delete recording">${I.trash}</button></span></div></div>`).join('')}</div>`;
 }
 
 /* ---------------- calendar ---------------- */
@@ -1308,7 +1125,7 @@ function qaPlaceholder() {
 function qaHTML(id) {
   return `<form class="qa" data-form="qa" autocomplete="off"><label class="sr" for="${id}">Quick add</label>
     <input id="${id}" data-enter="qa" dir="auto" enterkeyhint="done" placeholder="${esc(qaPlaceholder())}" value="${esc(ui.qa)}">
-    ${gemOn() ? `<button class="go ai" type="button" data-act="ai-qa" data-for="${id}" aria-label="Turn into tasks with Gemini">${SPARK}</button>` : ''}<button class="go" type="submit" aria-label="Add">${I.plus}</button></form>
+    <button class="go" type="submit" aria-label="Add">${I.plus}</button></form>
     <div class="qa-prev" id="${id}-prev">${ui.view === 'notes' || ui.view === 'home' ? '' : qaPreview(ui.qa)}</div>`;
 }
 function bottomHTML() {
@@ -1766,7 +1583,17 @@ function richEnsureBlock() {
   [...ed.childNodes].forEach(ch => { if (ch.nodeType === 3 || (ch.nodeType === 1 && !/^(P|H1|H2|DIV)$/.test(ch.tagName))) { const p = document.createElement('p'); ch.replaceWith(p); p.appendChild(ch); } });
   [...ed.children].forEach(b => { if (!b.getAttribute('dir')) b.setAttribute('dir', 'auto'); });
 }
-/* writing direction of the paragraphs under the cursor: auto (follows the language), ltr or rtl */
+/* One button, like Google Docs: flips the paragraphs under the cursor between right-to-left and left-to-right.
+   New paragraphs still pick their direction from the language you type in. */
+function richDirToggle() {
+  const ed = $('#n-rich'); const sel = getSelection(); if (!ed) return;
+  let b = null;
+  if (sel.rangeCount && ed.contains(sel.anchorNode)) { let n = sel.anchorNode; if (n.nodeType === 3) n = n.parentElement; while (n && n.parentElement !== ed) n = n.parentElement; b = n; }
+  if (!b) b = ed.lastElementChild;
+  const cur = b && getComputedStyle(b).direction === 'rtl';
+  richDir(cur ? 'ltr' : 'rtl');
+}
+/* writing direction of the paragraphs under the cursor: ltr or rtl */
 function richDir(d) {
   const ed = $('#n-rich'); const sel = getSelection(); if (!ed) return;
   let bls = [];
@@ -1833,12 +1660,12 @@ function richToolsState() {
   const blk = n.closest('h1,h2') ? n.closest('h1,h2').tagName.toLowerCase() : 'p';
   const w = n.closest('b,strong') ? 'bold' : n.closest('span.l') ? 'light' : 'regular';
   tb.querySelectorAll('[data-fmt]').forEach(b => b.classList.toggle('on', b.dataset.fmt === blk || b.dataset.fmt === w));
-  const bl = n.closest('#n-rich > *'); const d = (bl && bl.getAttribute('dir')) || 'auto';
-  tb.querySelectorAll('[data-dir]').forEach(b => b.classList.toggle('on', b.dataset.dir === d));
+  const bl = n.closest('#n-rich > *'); const d = bl && getComputedStyle(bl).direction === 'rtl' ? 'rtl' : 'ltr';
+  const db1 = tb.querySelector('[data-act=ndir-toggle]'); if (db1 && db1.dataset.cur !== d) { db1.dataset.cur = d; db1.innerHTML = d === 'rtl' ? I.dirRtl : I.dirLtr; }
 }
 document.addEventListener('selectionchange', () => { if ($('#n-rich')) richToolsState(); });
 /* keep the text selected when a format button is pressed */
-document.addEventListener('pointerdown', e => { if (e.target.closest && e.target.closest('#ntools [data-fmt], #ntools [data-dir]')) e.preventDefault(); });
+document.addEventListener('pointerdown', e => { if (e.target.closest && e.target.closest('#ntools [data-fmt], #ntools [data-act=ndir-toggle]')) e.preventDefault(); });
 document.addEventListener('paste', e => {
   if (!e.target.closest || !e.target.closest('#n-rich')) return;
   e.preventDefault();
@@ -1850,7 +1677,7 @@ function noteToolsHTML(n) {
   return `<div class="ntools" id="ntools" role="toolbar" aria-label="Formatting">
     <div class="ng"><button data-act="nfmt" data-fmt="h1" aria-label="Heading 1">H1</button><button data-act="nfmt" data-fmt="h2" aria-label="Heading 2">H2</button><button data-act="nfmt" data-fmt="p" aria-label="Body text">Text</button></div>
     <div class="ng"><button data-act="nfmt" data-fmt="bold" aria-label="Bold"><b>B</b></button><button data-act="nfmt" data-fmt="regular" aria-label="Regular">Aa</button><button data-act="nfmt" data-fmt="light" aria-label="Light"><span style="font-weight:300">Aa</span></button></div>
-    <div class="ng ndir"><button data-act="ndir" data-dir="auto" aria-label="Direction follows the language" title="Auto: follows the language">Auto</button><button data-act="ndir" data-dir="ltr" aria-label="Left to right" title="Left to right (English)"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h10M4 11h7M4 16h13M17 13l3 3-3 3"/></svg></button><button data-act="ndir" data-dir="rtl" aria-label="Right to left" title="Right to left (Arabic)"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6H10M20 11h-7M20 16H7M7 13l-3 3 3 3"/></svg></button></div>
+    <button class="ndir1" data-act="ndir-toggle" data-cur="ltr" aria-label="Text direction" title="Text direction (right-to-left / left-to-right)">${I.dirLtr}</button>
     <button class="ncol" data-act="ncolors" aria-label="Page colour" aria-expanded="${!!ui.nColors}"><i style="background:${c}"></i></button>
   </div>
   ${ui.nColors ? `<div class="nswatch" role="group" aria-label="Page colour">${NOTE_COLORS.map(([v, nm]) => `<button data-act="ncolor" data-v="${v}" aria-label="${nm}" aria-pressed="${c === v}" class="${c === v ? 'on' : ''}"><i style="background:${v}"></i><span>${nm}</span></button>`).join('')}</div>` : ''}`;
@@ -2207,7 +2034,7 @@ function projectView(p) {
     <div class="sec-h" style="margin-top:26px"><h2>${(p.stages || []).length ? 'Stages' : 'List'}</h2></div>
     ${(p.stages || []).map(stageBlock).join('')}
     ${stageBlock(null)}
-    <div style="margin-top:22px;display:grid;grid-template-columns:${gemOn() ? '1fr 1fr' : '1fr'};gap:8px"><button class="dash" style="width:100%" data-act="add-stage">+ Add stage</button>${gemOn() ? `<button class="dash ai" style="width:100%" data-act="ai-plan">${SPARK} Plan stages with Gemini</button>` : ''}</div>
+    <div style="margin-top:22px"><button class="dash" style="width:100%" data-act="add-stage">+ Add stage</button></div>
   </div>`;
 }
 
@@ -2362,7 +2189,6 @@ function reviewView() {
       ${stat(sc.fA || sc.fP ? 'Related events' : 'Meetings & events', loading ? '…' : r.events.length, loading ? 'loading calendar' : `${r.hours.toFixed(1)} h in calendar`)}
     </div>
     <p class="mut" style="font-size:13px;margin:12px 2px 0">${r.created.length} created · ${r.postponed.length} postponements · ${r.rep.filter(l => !l.late).length}/${r.rep.length} repeats on time</p>
-    ${aiReviewHTML()}
     ${reviewNumbersHTML(r)}
     ${focus}
     ${entries.length ? sec(byTitle, `<div class="bars">${entries.map(([n, v]) => `<div><div class="l"><span dir="auto" style="display:flex;align-items:center;gap:7px">${colorFor(n) ? `<i class="adot" style="background:${colorFor(n)}"></i>` : ''}${esc(n)}</span><span class="mut">${v.done} done · ${v.open} open${v.overdue ? ` · <span class="or">${v.overdue} late</span>` : ''}</span></div><div class="t"><i style="width:${Math.round((v.done + v.open) / max * 100)}%;${colorFor(n) ? 'background:' + colorFor(n) : ''}"></i></div></div>`).join('')}</div>`) : ''}
@@ -2515,7 +2341,6 @@ function renderSheet() {
   if (s.type === 'task') { const t = db.tasks[s.id]; if (!t || t.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = taskSheet(t); }
   else if (s.type === 'event') inner = eventSheet(s);
   else if (s.type === 'settings') inner = settingsSheet();
-  else if (s.type === 'ai') inner = aiSheet();
   else if (s.type === 'note') { const n = db.notes[s.id]; if (!n || n.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = noteSheet(n); }
   else if (s.type === 'image') inner = imageSheet(s);
   else if (s.type === 'list') { const l = db.lists[s.id]; if (!l || l.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = listSheet(l); }
@@ -2566,7 +2391,7 @@ function noteMeta(n) {
 function noteSheet(n) {
   if (hasInk(n)) return inkSheet(n);
   return `<div class="writer" role="dialog" aria-label="Note" style="--npage:${noteColor(n)}">
-    <div class="bar"><button class="ib" data-act="close-sheet" aria-label="Back">${I.l}</button><span class="meta" id="n-meta">${noteMeta(n)}</span><span style="display:flex;gap:4px"><button class="ib nmic ${rec && rec.noteId === n.id ? 'on' : ''}" data-act="${rec ? 'rec-stop' : 'rec-start'}" aria-label="${rec ? 'Stop recording' : 'Record a voice note'}" title="${rec ? 'Stop recording' : 'Record'}">${rec ? '<i class="sq"></i>' : I.mic}</button>${gemOn() ? `<button class="ib ai" data-act="ai-note" aria-label="Turn this note into tasks with Gemini" title="Tasks from this note">${SPARK}</button>` : ''}<button class="ib" data-act="del-note" aria-label="Delete note">${I.trash}</button></span></div>
+    <div class="bar"><button class="ib" data-act="close-sheet" aria-label="Back">${I.l}</button><span class="meta" id="n-meta">${noteMeta(n)}</span><span style="display:flex;gap:4px"><button class="ib nmic ${rec && rec.noteId === n.id ? 'on' : ''}" data-act="${rec ? 'rec-stop' : 'rec-start'}" aria-label="${rec ? 'Stop recording' : 'Record a voice note'}" title="${rec ? 'Stop recording' : 'Record'}">${rec ? '<i class="sq"></i>' : I.mic}</button><button class="ib" data-act="note-share" aria-label="Share note" title="Share">${I.share}</button><button class="ib" data-act="del-note" aria-label="Delete note">${I.trash}</button></span></div>
     ${noteToolsHTML(n)}
     <div class="body" id="n-body">
       <textarea id="n-title" class="wt" rows="1" dir="auto" placeholder="Title" aria-label="Title">${esc(n.title || '')}</textarea>
@@ -2620,13 +2445,8 @@ function settingsSheet() {
   ${cals.length ? sec('Calendars shown', `<div class="card">${cals.filter(c => c.selected).map(c => `<div class="field"><span class="lb" style="display:flex;align-items:center;gap:8px;color:var(--tx);min-width:0"><i style="width:8px;height:8px;border-radius:4px;background:${esc(c.color || '#7AA2FF')};flex-shrink:0"></i><span dir="auto" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.name)}</span></span><button class="sw blue ${hidden.includes(c.id) ? '' : 'on'}" data-act="cal-toggle" data-id="${esc(c.id)}" role="switch" aria-checked="${!hidden.includes(c.id)}" aria-label="Show ${esc(c.name)}"></button></div>`).join('')}</div>`) : ''}
   ${sec('Google Tasks', `<div class="card"><div class="field"><span class="lb" style="color:var(--tx)">Sync with Google Tasks</span><button class="sw blue ${gtOn() ? 'on' : ''}" data-act="gt-toggle" role="switch" aria-checked="${gtOn()}" aria-label="Sync with Google Tasks"></button></div>
     ${gtOn() ? `<div class="field"><span class="lb">Status</span><span style="font-size:14px;text-align:end">${gtStatusHTML()}</span></div>` : ''}</div>
-    <p class="mut" style="margin:10px 2px 0;font-size:13px;line-height:1.6">Two-way with your “My Tasks” list: tasks you add here appear in Google Tasks, and tasks added there — by you, Gemini or “Hey Google” — appear here. Ticking, dates and deleting sync both ways. Add #housing, #dorba… to a Google task to file it in that section.</p>
+    <p class="mut" style="margin:10px 2px 0;font-size:13px;line-height:1.6">Two-way with your “My Tasks” list: tasks you add here appear in Google Tasks, and tasks added there — by you, or by voice with “Hey Google” — appear here. Ticking, dates and deleting sync both ways. Add #housing, #dorba… to a Google task to file it in that section.</p>
     ${gtOn() ? `<button class="btn full" style="margin-top:10px" data-act="gt-now">${I.sync} Sync Google Tasks now</button>` : ''}`)}
-  ${sec('Gemini', `<div class="card"><div class="field"><label for="gem-key">API key</label><input id="gem-key" type="password" autocomplete="off" spellcheck="false" placeholder="${gemOn() ? '•••••••• saved' : 'Paste your key'}" style="text-align:end"></div>
-    <div class="field"><span class="lb">Status</span><span style="font-size:14px">${gemOn() ? 'Ready' + (db.prefs.geminiModel ? ' · ' + esc(db.prefs.geminiModel) : '') : 'Not set'}</span></div>
-    ${gemOn() ? `<div class="field"><span class="lb" style="color:var(--tx)">Write out voice notes automatically</span><button class="sw blue ${db.prefs.autoTx ? 'on' : ''}" data-act="auto-tx" role="switch" aria-checked="${!!db.prefs.autoTx}" aria-label="Write out voice notes automatically"></button></div>` : ''}</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px"><button class="btn" data-act="gem-save">Save key</button>${gemOn() ? '<button class="btn" data-act="gem-clear">Remove key</button>' : '<a class="btn" style="text-decoration:none" target="_blank" rel="noopener" href="https://aistudio.google.com/apikey">Get a free key</a>'}</div>
-    <p class="mut" style="margin:10px 2px 0;font-size:13px;line-height:1.6">With a key, ${SPARK} buttons appear: turn any text or note into tasks, plan a project’s stages, and read your Review numbers. Text is sent to Google only when you press one. The key is kept in your private data file in Drive, so you enter it once.<br>An API key has its own limits, separate from a Gemini app subscription. A free key allows a set number of requests per minute and per day; for more, turn on billing for the key’s project in <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color:var(--sand)">AI Studio</a>.</p>`)}
   ${NATIVE ? sec('Home screen', `<button class="btn full" data-act="pin-widget">Add the widget to your home screen</button><p class="mut" style="margin:10px 0 0;font-size:13px;line-height:1.6">Shows today's events and urgent tasks. Long-press the app icon for quick actions.</p>`) : sec('Install', `${/Android/i.test(navigator.userAgent) ? `<a class="btn full" style="text-decoration:none;margin-bottom:10px" href="${APK_URL}">Download the Android app (with widget)</a>` : ''}` + (deferredPrompt ? '<button class="btn full" data-act="install">Install Zerodocs control on this device</button>' : '<p class="mut" style="margin:0;font-size:13px;line-height:1.6">Chrome on Android: menu ⋮ › Add to Home screen / Install app. Chrome on Mac: the install icon in the address bar, or menu › Cast, save and share › Install page as app.</p>'))}
   ${sec('Quick add tips', `<p class="mut" style="margin:0;font-size:13px;line-height:1.8" dir="auto">غداً · بعد غد · الخميس · 15/11 · بعد 3 أيام · ٤م · 16:30 · عاجل أو ! · #مشروع · كل شهر / كل أسبوع / كل يوم<br>Sections: #housing #zerodocs #dorba #outsource #personal (or #سكن #دربة #شخصي). Inside a section tab, new tasks go to that section automatically.<br>Start with @ (or اجتماع + time) to create a Google Calendar event.<br>Press N on a keyboard to jump to quick add.</p>`)}
   <button class="btn danger full" style="margin-top:26px" data-act="signout">Sign out on this device</button>`;
@@ -2699,20 +2519,11 @@ document.addEventListener('click', e => {
     }
     case 'gt-allow': connect(true); break;
     case 'gt-now': gtLast = 0; gtSync(true).then(ch => { if (ch) scheduleSync(800); toast(gtErr ? 'Google Tasks: not synced' : 'Google Tasks synced'); }); renderSheet(); break;
-    case 'gem-save': { const i = $('#gem-key'); const v = i ? i.value.trim() : ''; if (!v) { toast('Paste the key first'); break; } gemList = null; db.prefs = { ...db.prefs, geminiKey: v, geminiModel: null, updatedAt: now() }; save(); toast('Checking the key…');
-      gemini('Return JSON: {"ok":true}').then(() => { toast('Gemini is ready'); renderSheet(); renderMain(); }).catch(e => { gemFail(e); renderSheet(); }); renderSheet(); break; }
-    case 'gem-clear': db.prefs = { ...db.prefs, geminiKey: '', updatedAt: now() }; save(); renderSheet(); renderMain(); toast('Key removed'); break;
-    case 'ai-qa': { const i = document.getElementById(el.dataset.for); const v = i ? i.value : ''; const ctx = qaCtx(); aiTasksFrom(v, ctx); if (i && v.trim()) { i.value = ''; ui.qa = ''; } break; }
-    case 'ai-note': { const n = ui.sheet && db.notes[ui.sheet.id]; if (!n) break; richSave(); const txt = [n.title, n.text].filter(Boolean).join('\n'); cleanupNote(); aiTasksFrom(txt, {}); break; }
-    case 'ai-plan': { const p = db.projects[ui.projectId]; if (p) aiPlanProject(p); break; }
-    case 'ai-review': aiReview(); break;
-    case 'ai-tog': { const a = ui.ai; if (!a) break; const arr = a.kind === 'plan' ? a.stages : a.items; const x = arr && arr[+el.dataset.i]; if (x) { x.on = !x.on; renderSheet(); } break; }
-    case 'ai-add': aiApply(); break;
     case 'rec-start': recStart(); break;
+    case 'rec-share': { const n = ui.sheet && db.notes[ui.sheet.id]; if (n) shareClip(n, el.dataset.id); break; }
+    case 'note-share': { const n = ui.sheet && db.notes[ui.sheet.id]; if (n) shareNote(n); break; }
     case 'rec-stop': recStop(); break;
-    case 'rec-tx': { const n = ui.sheet && db.notes[ui.sheet.id]; if (n) transcribe(n.id, el.dataset.id); break; }
     case 'rec-del': { const n = ui.sheet && db.notes[ui.sheet.id]; if (n && confirm('Delete this recording?')) { richSave(); removeClip(n, el.dataset.id); renderSheet(); } break; }
-    case 'auto-tx': db.prefs = { ...db.prefs, autoTx: !db.prefs.autoTx, updatedAt: now() }; save(); renderSheet(); break;
     case 'sync-now': if (!authed()) { connect(false); } else { sync(); refreshMonth(ui.month, true); loadCals().catch(() => { }); toast('Syncing…'); } break;
     case 'signout': signOut(); break;
     case 'cal-toggle': { const h = new Set(db.prefs.hiddenCals || []); h.has(el.dataset.id) ? h.delete(el.dataset.id) : h.add(el.dataset.id); db.prefs = { ...db.prefs, hiddenCals: [...h], updatedAt: now() }; save(); renderSheet(); renderMain(); refreshMonth(ui.month, true); break; }
@@ -2749,7 +2560,7 @@ document.addEventListener('click', e => {
       const vals = {}; Object.entries(l.vals || {}).forEach(([k, x]) => { if (v === 'num' ? typeof x === 'number' : typeof x === 'boolean') vals[k] = x; });
       if (Object.keys(l.vals || {}).length && Object.keys(vals).length < Object.keys(l.vals || {}).length && !confirm('Days recorded with the other type will be cleared. Switch?')) break;
       updList(l, { htype: v, vals }); renderSheet(); renderMain(); break; }
-    case 'ndir': richDir(el.dataset.dir); break;
+    case 'ndir-toggle': richDirToggle(); break;
     case 'nfmt': { const f = el.dataset.fmt; if (f === 'h1' || f === 'h2' || f === 'p') richBlock(f); else richWeight(f); richToolsState(); break; }
     case 'ncolors': ui.nColors = !ui.nColors; renderSheet(); break;
     case 'ncolor': { const n = ui.sheet && db.notes[ui.sheet.id]; if (n) { n.color = el.dataset.v === NOTE_COLORS[0][0] ? null : el.dataset.v; n.updatedAt = now(); save(); ui.nColors = false; renderSheet(); } break; }
