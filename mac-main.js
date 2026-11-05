@@ -1,5 +1,5 @@
 // Ctrl Z for macOS: a native window around the Zerodocs control web app.
-const { app, BrowserWindow, shell, Menu, nativeTheme, session } = require('electron');
+const { app, BrowserWindow, shell, Menu, nativeTheme, session, systemPreferences } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
@@ -64,6 +64,15 @@ function createWindow() {
   // Exports save straight to Downloads.
   session.defaultSession.on('will-download', (_e, item) => {
     item.setSavePath(path.join(app.getPath('downloads'), item.getFilename()));
+  });
+
+  // The microphone, for voice notes: macOS asks once, the first time you record.
+  session.defaultSession.setPermissionRequestHandler(async (_wc, perm, cb, details) => {
+    if (perm === 'media' && process.platform === 'darwin' && (!details || !details.mediaTypes || details.mediaTypes.includes('audio'))) {
+      try { cb(await systemPreferences.askForMediaAccess('microphone')); } catch { cb(false); }
+      return;
+    }
+    cb(true);
   });
 
   win.loadURL(HOME);

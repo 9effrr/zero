@@ -1,7 +1,7 @@
 {
   "name": "ctrl-z",
   "productName": "Ctrl Z",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Zerodocs control planner",
   "main": "main.js",
   "author": "Zerodocs",
@@ -17,7 +17,10 @@
       "icon": "icon.png",
       "category": "public.app-category.productivity",
       "identity": null,
-      "darkModeSupport": true
+      "darkModeSupport": true,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Ctrl Z uses the microphone to record voice notes when you press the microphone button."
+      }
     }
   }
 }

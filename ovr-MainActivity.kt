@@ -62,6 +62,13 @@ class MainActivity : ComponentActivity() {
         ZeroWidget.render(this)
     }
 
+    // the microphone, for voice notes recorded in the web app
+    private var micRequest: android.webkit.PermissionRequest? = null
+    private val micLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        val r = micRequest; micRequest = null
+        if (r != null) { if (ok) r.grant(arrayOf(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE)) else r.deny() }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -94,6 +101,14 @@ class MainActivity : ComponentActivity() {
                         fileLauncher.launch(i); true
                     } catch (e: Exception) {
                         fileCallback = null; false
+                    }
+                }
+                override fun onPermissionRequest(request: android.webkit.PermissionRequest) {
+                    runOnUiThread {
+                        if (!request.resources.contains(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE)) { request.deny(); return@runOnUiThread }
+                        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED)
+                            request.grant(arrayOf(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+                        else { micRequest?.deny(); micRequest = request; micLauncher.launch(Manifest.permission.RECORD_AUDIO) }
                     }
                 }
             }

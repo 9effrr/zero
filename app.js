@@ -53,6 +53,7 @@ function toast(msg) {
 }
 
 const I = {
+  mic: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>',
   plus: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
   plusS: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
   l: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>',
@@ -287,7 +288,7 @@ function signOut() {
   if (!confirm('Sign out of Zerodocs control on this device? Your data stays safe in your Google Drive.')) return;
   try { if (NATIVE) ZeroNative.signOut(); } catch { }
   try { if (token && window.google) google.accounts.oauth2.revoke(token.access_token, () => { }); } catch { }
-  ['token', 'signedIn', 'email', 'fileId', 'folderId', 'imgFolderId', 'db', 'cals', 'events', 'dirty', 'lastSync'].forEach(LS.del);
+  ['token', 'signedIn', 'email', 'fileId', 'folderId', 'imgFolderId', 'audFolderId', 'gtSince', 'gtErr', 'gtLastOk', 'db', 'cals', 'events', 'dirty', 'lastSync'].forEach(LS.del);
   token = null; db = freshDb(); evCache = {}; cals = [];
   ui.sheet = null; renderSheet(); renderMain();
 }
@@ -405,10 +406,10 @@ async function ensureImgFolder() {
   }
   LS.set('imgFolderId', id); return id;
 }
-async function uploadBlob(name, blob, parent) {
+async function uploadBlob(name, blob, parent, mime = 'image/jpeg') {
   const bd = 'zero' + uid();
-  const meta = JSON.stringify({ name, parents: [parent], mimeType: 'image/jpeg' });
-  const body = new Blob([`--${bd}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${bd}\r\nContent-Type: image/jpeg\r\n\r\n`, blob, `\r\n--${bd}--`]);
+  const meta = JSON.stringify({ name, parents: [parent], mimeType: mime });
+  const body = new Blob([`--${bd}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${bd}\r\nContent-Type: ${mime}\r\n\r\n`, blob, `\r\n--${bd}--`]);
   const r = await gfetch(`${UPL}/files?uploadType=multipart&fields=id`, { method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + bd }, body });
   return (await r.json()).id;
 }
@@ -472,7 +473,7 @@ async function sync(retried) {
     LS.set('dirty', false); LS.set('lastSync', now());
     setSync('ok');
     softRender();
-    uploadImages();
+    uploadImages(); uploadAudio();
     if (gtOn()) gtSync().then(ch => { if (ch) scheduleSync(800); });
   } catch (e) {
     console.error(e); setSync('err');
@@ -490,7 +491,7 @@ async function sync(retried) {
 const GT = 'https://tasks.googleapis.com/tasks/v1';
 const GT_SCOPE = 'https://www.googleapis.com/auth/tasks';
 let gtBusy = false, gtLast = 0, gtErr = LS.get('gtErr', null);
-const gtOn = () => !!db.prefs.gtasksOn;
+const gtOn = () => db.prefs.gtasksOn !== false; /* on unless turned off in Settings */
 function gtStamp(t, gu) { t.updatedAt = now(); t.gtPushed = t.updatedAt; if (gu) t.gtAt = gu; }
 function gtBody(t) {
   return {
@@ -616,14 +617,14 @@ const GEM_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.0-flash
 const gemKey = () => (db.prefs.geminiKey || '').trim();
 const gemOn = () => !!gemKey();
 const SPARK = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5c.4 4.9 4.6 9.1 9.5 9.5-4.9.4-9.1 4.6-9.5 9.5-.4-4.9-4.6-9.1-9.5-9.5 4.9-.4 9.1-4.6 9.5-9.5z"/></svg>';
-async function gemini(prompt) {
+async function gemini(prompt, extra = []) {
   const key = gemKey(); if (!key) { const e = new Error('nokey'); e.code = 'nokey'; throw e; }
   const models = [db.prefs.geminiModel, ...GEM_MODELS].filter((m, i, a) => m && a.indexOf(m) === i);
   let last = null;
   for (const m of models) {
     const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-      body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { responseMimeType: 'application/json', temperature: 0.3 } })
+      body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }, ...extra] }], generationConfig: { responseMimeType: 'application/json', temperature: 0.3 } })
     });
     if (r.status === 404) { last = new Error('model ' + m); continue; }
     if (!r.ok) { const t = await r.text(); const e = new Error(r.status + ' ' + t.slice(0, 300)); e.status = r.status; e.code = r.status === 429 ? 'limit' : /API_KEY|API key/i.test(t) ? 'key' : 'err'; throw e; }
@@ -752,6 +753,133 @@ function aiApply() {
     toast(`Added ${add.length} stage${add.length === 1 ? '' : 's'}`);
   }
   ui.ai = null; closeSheet(); renderMain();
+}
+
+/* ---------------- voice notes ----------------
+   Recordings live with the note (n.audio = [{id, at, dur, mime, local?, tx?}]), are cached on the device
+   and uploaded to Drive › Zero › audio. With a Gemini key, a recording can be written out into the note. */
+let rec = null;
+const fmtDur = s => { s = Math.max(0, Math.round(s || 0)); return Math.floor(s / 60) + ':' + pad(s % 60); };
+const recMime = () => ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/webm'].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) || '';
+async function recStart() {
+  const n = ui.sheet && ui.sheet.type === 'note' && db.notes[ui.sheet.id]; if (!n || rec) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) { toast('Recording isn’t supported on this device'); return; }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  catch (e) { console.warn(e); toast('Allow the microphone to record'); return; }
+  const mime = recMime();
+  let mr;
+  try { mr = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 48000 } : {}); }
+  catch { mr = new MediaRecorder(stream); }
+  rec = { mr, stream, chunks: [], t0: now(), noteId: n.id, mime: (mr.mimeType || mime || 'audio/webm') };
+  mr.ondataavailable = e => { if (e.data && e.data.size) rec && rec.chunks.push(e.data); };
+  mr.onstop = recSave;
+  mr.start(1000);
+  rec.timer = setInterval(() => { const el = document.getElementById('rec-time'); if (el && rec) el.textContent = fmtDur((now() - rec.t0) / 1000); }, 500);
+  richSave(); renderSheet();
+}
+function recStop() { if (!rec) return; try { if (rec.mr.state !== 'inactive') rec.mr.stop(); else recSave(); } catch { recSave(); } }
+async function recSave() {
+  const r = rec; if (!r || r.saved) return; r.saved = true; rec = null;
+  clearInterval(r.timer); r.stream.getTracks().forEach(t => t.stop());
+  const dur = (now() - r.t0) / 1000;
+  const n = db.notes[r.noteId];
+  if (!n || !r.chunks.length || dur < 0.8) { if (ui.sheet && ui.sheet.type === 'note') renderSheet(); return; }
+  const blob = new Blob(r.chunks, { type: r.mime.split(';')[0] });
+  const id = 'l_' + uid();
+  await IDB.put(id, blob);
+  n.audio = [...(n.audio || []), { id, local: true, at: now(), dur: Math.round(dur), mime: blob.type }];
+  if (n.deleted) n.deleted = false;
+  n.updatedAt = now(); save();
+  if (ui.sheet && ui.sheet.type === 'note' && ui.sheet.id === n.id) { richSave(); renderSheet(); }
+  renderMain(); uploadAudio();
+  if (gemOn() && db.prefs.autoTx) transcribe(n.id, id);
+}
+async function audBlob(id) {
+  let b = null; try { b = await IDB.get(id); } catch { }
+  if (!b && !id.startsWith('l_') && authed() && navigator.onLine) { try { b = await (await gfetch(`${DRV}/files/${id}?alt=media`)).blob(); IDB.put(id, b).catch(() => { }); } catch (e) { console.warn(e); } }
+  return b;
+}
+function hydrateAud(root = document) {
+  root.querySelectorAll('audio[data-aud]').forEach(async el => {
+    if (el.dataset.done) return; el.dataset.done = '1';
+    const id = el.dataset.aud;
+    if (!imgURL[id]) { const b = await audBlob(id); if (b) imgURL[id] = URL.createObjectURL(b); }
+    if (imgURL[id]) el.src = imgURL[id]; else { const c = el.closest('.vclip'); if (c) c.classList.add('missing'); }
+  });
+}
+async function ensureAudFolder() {
+  let id = LS.get('audFolderId', null); if (id) return id;
+  const parent = await ensureFolder();
+  const f = await findOne(`name='audio' and '${parent}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+  if (f) id = f.id;
+  else {
+    const r = await gfetch(`${DRV}/files?fields=id`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'audio', parents: [parent], mimeType: 'application/vnd.google-apps.folder' }) });
+    id = (await r.json()).id;
+  }
+  LS.set('audFolderId', id); return id;
+}
+let uploadingAud = false;
+async function uploadAudio() {
+  if (uploadingAud || !authed() || !navigator.onLine) return;
+  const pending = notes().filter(n => (n.audio || []).some(a => a.local));
+  if (!pending.length) return;
+  uploadingAud = true;
+  try {
+    const folder = await ensureAudFolder();
+    for (const n of pending) for (const a of [...(n.audio || [])]) {
+      if (!a.local) continue;
+      const b = await IDB.get(a.id); if (!b) continue;
+      const ext = /mp4|aac/.test(b.type) ? 'm4a' : /ogg/.test(b.type) ? 'ogg' : 'webm';
+      const id = await uploadBlob(`${(n.title || 'voice note').slice(0, 40)} ${new Date(a.at).toISOString().slice(0, 16).replace('T', ' ')}.${ext}`, b, folder, b.type || 'audio/webm');
+      await IDB.put(id, b);
+      if (imgURL[a.id]) imgURL[id] = imgURL[a.id];
+      const cur = db.notes[n.id];
+      cur.audio = (cur.audio || []).map(x => x.id === a.id ? { ...x, id, local: false } : x); cur.updatedAt = now();
+      IDB.del(a.id); save();
+    }
+    if (ui.sheet && ui.sheet.type === 'note') { richSave(); renderSheet(); }
+  } catch (e) { console.error(e); }
+  finally { uploadingAud = false; }
+}
+function removeClip(n, id) {
+  n.audio = (n.audio || []).filter(x => x.id !== id); n.updatedAt = now(); save();
+  if (id.startsWith('l_')) IDB.del(id);
+  else if (authed() && navigator.onLine) gfetch(`${DRV}/files/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) }).catch(() => { });
+}
+const txBusy = {};
+async function transcribe(noteId, clipId) {
+  if (!gemOn()) { gemFail({ code: 'nokey' }); return; }
+  const n = db.notes[noteId]; const c = n && (n.audio || []).find(x => x.id === clipId); if (!c || txBusy[clipId]) return;
+  txBusy[clipId] = true; if (ui.sheet && ui.sheet.type === 'note') { richSave(); renderSheet(); }
+  try {
+    const b = await audBlob(clipId); if (!b) throw Object.assign(new Error('no audio'), { code: 'err' });
+    const data = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.onerror = rej; fr.readAsDataURL(b); });
+    const mime = ((c.mime || b.type || 'audio/webm').split(';')[0]) || 'audio/webm';
+    const out = await gemini(`Transcribe this voice note exactly as spoken. It may be in Arabic (any dialect, write it as said), English, or a mix — keep each part in its own language. Add punctuation and split into short paragraphs where the speaker pauses or changes topic. Do not summarise, translate or add anything.
+Return JSON: {"text": string}`, [{ inline_data: { mime_type: mime, data } }]);
+    const txt = String(out.text || '').trim();
+    if (!txt) { toast('Nothing to write out in that recording'); return; }
+    const cur = db.notes[noteId]; if (!cur) return;
+    if (ui.sheet && ui.sheet.type === 'note' && ui.sheet.id === noteId) richSave();
+    const base = cur.html ? cur.html : textToHtml(cur.text);
+    const add = txt.split(/\n+/).map(l => l.trim()).filter(Boolean).map(l => `<p>${esc(l)}</p>`).join('');
+    const r = richOut(richParse(base.replace(/(<p><\/p>)+$/, '') + add));
+    cur.html = r.html; cur.text = r.text.replace(/\n+$/, '');
+    cur.audio = (cur.audio || []).map(x => x.id === clipId ? { ...x, tx: true } : x);
+    cur.updatedAt = now(); save();
+    toast('Written into the note');
+  } catch (e) { gemFail(e); }
+  finally { delete txBusy[clipId]; if (ui.sheet && ui.sheet.type === 'note' && ui.sheet.id === noteId) renderSheet(); renderMain(); }
+}
+function voiceHTML(n) {
+  const recHere = rec && rec.noteId === n.id;
+  const clips = n.audio || [];
+  if (!clips.length && !recHere) return '';
+  return `<div class="vlist">${recHere ? `<div class="vrec"><span class="vdot"></span><span>Recording</span><span class="num" id="rec-time">${fmtDur((now() - rec.t0) / 1000)}</span><button class="pill" data-act="rec-stop">Stop</button></div>` : ''}
+    ${clips.map(c => `<div class="vclip"><audio data-aud="${esc(c.id)}" controls preload="metadata"></audio>
+      <div class="vmeta"><span class="mut num">${fmtDur(c.dur)} · ${esc(new Date(c.at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}${c.local ? ' · saved on this device' : ''}</span>
+      <span class="vact">${gemOn() ? (txBusy[c.id] ? `<span class="ai-busy" style="font-size:12px">${SPARK} Writing…</span>` : `<button class="pill ai" data-act="rec-tx" data-id="${esc(c.id)}">${SPARK} ${c.tx ? 'Write out again' : 'Write out'}</button>`) : ''}<button class="ib" data-act="rec-del" data-id="${esc(c.id)}" aria-label="Delete recording">${I.trash}</button></span></div></div>`).join('')}</div>`;
 }
 
 /* ---------------- calendar ---------------- */
@@ -1118,6 +1246,7 @@ function bottomHTML() {
 function bannerHTML() {
   if (!navigator.onLine) return `<div class="card" style="padding:10px 14px;margin-bottom:14px;font-size:13px;color:var(--mut)">Offline — your changes are saved on this device and will sync when you're back online.</div>`;
   if (!authed()) return `<div class="card" style="padding:8px 8px 8px 14px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px"><span class="mut">Google session paused.</span><button class="pill" data-act="connect">Reconnect</button></div>`;
+  if (gtOn() && gtErr === 'scope') return `<div class="card" style="padding:8px 8px 8px 14px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px"><span class="mut">Allow Google Tasks once on this device to sync your tasks.</span><button class="pill" data-act="gt-allow">Allow</button></div>`;
   return '';
 }
 let tabsScroll = 0;
@@ -1908,7 +2037,7 @@ function notesView() {
   if (list.length > 5) html += `<input id="note-q" class="tin" dir="auto" type="search" placeholder="Search notes" value="${esc(ui.nq)}" style="margin-bottom:12px">`;
   html += `<div class="ngrid">${shown.map((n, i) => {
     const { t, p } = noteTitle(n);
-    return `<button class="ncard ${i === 0 && !q && !n.color ? 'first' : ''} ${n.color ? 'tinted' : ''}" data-act="open-note" data-id="${esc(n.id)}" ${n.color ? `style="--npage:${esc(n.color)}"` : ''}><span class="t" dir="auto">${esc(t)}</span>${p ? `<span class="p" dir="auto">${esc(p.slice(0, 280))}</span>` : ''}${hasInk(n) ? `<canvas class="nthumb" data-ink="${esc(n.id)}" aria-hidden="true"></canvas>` : ''}<span class="d">${esc(new Date(n.updatedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</span></button>`;
+    return `<button class="ncard ${i === 0 && !q && !n.color ? 'first' : ''} ${n.color ? 'tinted' : ''}" data-act="open-note" data-id="${esc(n.id)}" ${n.color ? `style="--npage:${esc(n.color)}"` : ''}><span class="t" dir="auto">${esc(t)}</span>${p ? `<span class="p" dir="auto">${esc(p.slice(0, 280))}</span>` : ''}${hasInk(n) ? `<canvas class="nthumb" data-ink="${esc(n.id)}" aria-hidden="true"></canvas>` : ''}<span class="d">${(n.audio || []).length ? `<span class="vtag">${I.mic}${n.audio.length > 1 ? n.audio.length : ''}</span>` : ''}${esc(new Date(n.updatedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</span></button>`;
   }).join('')}</div>`;
   if (!list.length) html += '<div class="empty" style="padding-top:20px">No notes yet. Tap “New note” to start writing.</div>';
   else if (!shown.length) html += '<div class="empty">No notes match.</div>';
@@ -2286,7 +2415,8 @@ function cleanupNote() {
   if (!s || s.type !== 'note') return;
   const n = db.notes[s.id]; if (!n) return;
   clearTimeout(typeT);
-  if (!(n.text || '').trim() && !(n.title || '').trim() && !hasInk(n)) { n.deleted = true; n.updatedAt = now(); }
+  const recording = rec && rec.noteId === n.id; if (recording) recStop();
+  if (!recording && !(n.text || '').trim() && !(n.title || '').trim() && !hasInk(n) && !(n.audio || []).length) { n.deleted = true; n.updatedAt = now(); }
   save();
 }
 function openEventSheet(ev, pre = {}) {
@@ -2317,7 +2447,7 @@ function renderSheet() {
   else if (s.type === 'image') inner = imageSheet(s);
   else if (s.type === 'list') { const l = db.lists[s.id]; if (!l || l.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = listSheet(l); }
   const sc = $('.sheet', root); const top = sc ? sc.scrollTop : 0;
-  if (s.type === 'note') { const nb = $('#n-body', root); const nt = nb ? nb.scrollTop : 0; root.innerHTML = inner; growNote(); bindInk(); try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch { } const b2 = $('#n-body', root); if (b2) { b2.scrollTop = nt; drawInkView(); } return; }
+  if (s.type === 'note') { const nb = $('#n-body', root); const nt = nb ? nb.scrollTop : 0; root.innerHTML = inner; growNote(); bindInk(); hydrateAud(root); try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch { } const b2 = $('#n-body', root); if (b2) { b2.scrollTop = nt; drawInkView(); } return; }
   root.innerHTML = `<div class="sheet-bg" data-act="close-sheet"></div><div class="sheet" role="dialog" aria-modal="true" aria-label="${s.type}">${inner}</div>`;
   const nsc = $('.sheet', root); if (nsc) nsc.scrollTop = top;
   autoGrow(); hydrateImgs(root);
@@ -2363,11 +2493,12 @@ function noteMeta(n) {
 function noteSheet(n) {
   if (hasInk(n)) return inkSheet(n);
   return `<div class="writer" role="dialog" aria-label="Note" style="--npage:${noteColor(n)}">
-    <div class="bar"><button class="ib" data-act="close-sheet" aria-label="Back">${I.l}</button><span class="meta" id="n-meta">${noteMeta(n)}</span><span style="display:flex;gap:4px">${gemOn() ? `<button class="ib ai" data-act="ai-note" aria-label="Turn this note into tasks with Gemini" title="Tasks from this note">${SPARK}</button>` : ''}<button class="ib" data-act="del-note" aria-label="Delete note">${I.trash}</button></span></div>
+    <div class="bar"><button class="ib" data-act="close-sheet" aria-label="Back">${I.l}</button><span class="meta" id="n-meta">${noteMeta(n)}</span><span style="display:flex;gap:4px"><button class="ib nmic ${rec && rec.noteId === n.id ? 'on' : ''}" data-act="${rec ? 'rec-stop' : 'rec-start'}" aria-label="${rec ? 'Stop recording' : 'Record a voice note'}" title="${rec ? 'Stop recording' : 'Record'}">${rec ? '<i class="sq"></i>' : I.mic}</button>${gemOn() ? `<button class="ib ai" data-act="ai-note" aria-label="Turn this note into tasks with Gemini" title="Tasks from this note">${SPARK}</button>` : ''}<button class="ib" data-act="del-note" aria-label="Delete note">${I.trash}</button></span></div>
     ${noteToolsHTML(n)}
     <div class="body" id="n-body">
       <textarea id="n-title" class="wt" rows="1" dir="auto" placeholder="Title" aria-label="Title">${esc(n.title || '')}</textarea>
       <div class="rule"></div>
+      ${voiceHTML(n)}
       <div id="n-rich" class="wb rich" contenteditable="true" dir="auto" role="textbox" aria-multiline="true" aria-label="Note" data-ph="Start writing…">${richForEditor(n)}</div>
     </div></div>`;
 }
@@ -2419,7 +2550,8 @@ function settingsSheet() {
     <p class="mut" style="margin:10px 2px 0;font-size:13px;line-height:1.6">Two-way with your “My Tasks” list: tasks you add here appear in Google Tasks, and tasks added there — by you, Gemini or “Hey Google” — appear here. Ticking, dates and deleting sync both ways. Add #housing, #dorba… to a Google task to file it in that section.</p>
     ${gtOn() ? `<button class="btn full" style="margin-top:10px" data-act="gt-now">${I.sync} Sync Google Tasks now</button>` : ''}`)}
   ${sec('Gemini', `<div class="card"><div class="field"><label for="gem-key">API key</label><input id="gem-key" type="password" autocomplete="off" spellcheck="false" placeholder="${gemOn() ? '•••••••• saved' : 'Paste your key'}" style="text-align:end"></div>
-    <div class="field"><span class="lb">Status</span><span style="font-size:14px">${gemOn() ? 'Ready · ' + esc(db.prefs.geminiModel || GEM_MODELS[0]) : 'Not set'}</span></div></div>
+    <div class="field"><span class="lb">Status</span><span style="font-size:14px">${gemOn() ? 'Ready · ' + esc(db.prefs.geminiModel || GEM_MODELS[0]) : 'Not set'}</span></div>
+    ${gemOn() ? `<div class="field"><span class="lb" style="color:var(--tx)">Write out voice notes automatically</span><button class="sw blue ${db.prefs.autoTx ? 'on' : ''}" data-act="auto-tx" role="switch" aria-checked="${!!db.prefs.autoTx}" aria-label="Write out voice notes automatically"></button></div>` : ''}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px"><button class="btn" data-act="gem-save">Save key</button>${gemOn() ? '<button class="btn" data-act="gem-clear">Remove key</button>' : '<a class="btn" style="text-decoration:none" target="_blank" rel="noopener" href="https://aistudio.google.com/apikey">Get a free key</a>'}</div>
     <p class="mut" style="margin:10px 2px 0;font-size:13px;line-height:1.6">With a key, ${SPARK} buttons appear: turn any text or note into tasks, plan a project’s stages, and read your Review numbers. Text is sent to Google only when you press one. The key is kept in your private data file in Drive, so you enter it once.</p>`)}
   ${NATIVE ? sec('Home screen', `<button class="btn full" data-act="pin-widget">Add the widget to your home screen</button><p class="mut" style="margin:10px 0 0;font-size:13px;line-height:1.6">Shows today's events and urgent tasks. Long-press the app icon for quick actions.</p>`) : sec('Install', `${/Android/i.test(navigator.userAgent) ? `<a class="btn full" style="text-decoration:none;margin-bottom:10px" href="${APK_URL}">Download the Android app (with widget)</a>` : ''}` + (deferredPrompt ? '<button class="btn full" data-act="install">Install Zerodocs control on this device</button>' : '<p class="mut" style="margin:0;font-size:13px;line-height:1.6">Chrome on Android: menu ⋮ › Add to Home screen / Install app. Chrome on Mac: the install icon in the address bar, or menu › Cast, save and share › Install page as app.</p>'))}
@@ -2435,7 +2567,7 @@ function go(view) { ui.view = view; LS.set('view', view); if (view !== 'project'
 function closeSheetQuiet() { if (ui.sheet) { if (history.state && history.state.zsheet) history.back(); ui.sheet = null; renderSheet(); } }
 function openProject(id) { if (!db.projects[id]) return; ui.projectId = id; ui.view = 'project'; LS.set('view', 'project'); LS.set('projectId', id); renderMain(); window.scrollTo(0, 0); }
 function openNote(id) {
-  if (INK_TABLET) { const n = db.notes[id]; if (n) { try { ZeroNative.openInk(JSON.stringify(n)); return; } catch { } } }
+  if (INK_TABLET) { const n = db.notes[id]; if (n && !(n.audio || []).length) { try { ZeroNative.openInk(JSON.stringify(n)); return; } catch { } } }
   openSheet({ type: 'note', id });
   setTimeout(() => { const n = db.notes[id]; const i = n && !(n.title || n.text) ? $('#n-title') : null; if (i) i.focus(); }, 80);
 }
@@ -2503,6 +2635,11 @@ document.addEventListener('click', e => {
     case 'ai-review': aiReview(); break;
     case 'ai-tog': { const a = ui.ai; if (!a) break; const arr = a.kind === 'plan' ? a.stages : a.items; const x = arr && arr[+el.dataset.i]; if (x) { x.on = !x.on; renderSheet(); } break; }
     case 'ai-add': aiApply(); break;
+    case 'rec-start': recStart(); break;
+    case 'rec-stop': recStop(); break;
+    case 'rec-tx': { const n = ui.sheet && db.notes[ui.sheet.id]; if (n) transcribe(n.id, el.dataset.id); break; }
+    case 'rec-del': { const n = ui.sheet && db.notes[ui.sheet.id]; if (n && confirm('Delete this recording?')) { richSave(); removeClip(n, el.dataset.id); renderSheet(); } break; }
+    case 'auto-tx': db.prefs = { ...db.prefs, autoTx: !db.prefs.autoTx, updatedAt: now() }; save(); renderSheet(); break;
     case 'sync-now': if (!authed()) { connect(false); } else { sync(); refreshMonth(ui.month, true); loadCals().catch(() => { }); toast('Syncing…'); } break;
     case 'signout': signOut(); break;
     case 'cal-toggle': { const h = new Set(db.prefs.hiddenCals || []); h.has(el.dataset.id) ? h.delete(el.dataset.id) : h.add(el.dataset.id); db.prefs = { ...db.prefs, hiddenCals: [...h], updatedAt: now() }; save(); renderSheet(); renderMain(); refreshMonth(ui.month, true); break; }

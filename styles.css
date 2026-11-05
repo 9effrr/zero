@@ -796,3 +796,20 @@ a{color:var(--sand2)}
 .ai-it .tx .mut,.ai-st .tx .mut{font-size:12px;display:flex;align-items:center;gap:5px;flex-wrap:wrap}
 .ai-sub{font-size:13px;color:var(--tx2);line-height:1.5}
 .ai-it:not(.on) .tx,.ai-st:not(.on) .tx{opacity:.5}
+
+/* v15: voice notes */
+.ib.nmic.on{background:rgba(227,106,90,.18);color:var(--red)}
+.ib.nmic .sq{width:12px;height:12px;border-radius:3px;background:currentColor;display:block}
+.vlist{display:flex;flex-direction:column;gap:8px;margin:0 0 16px}
+.vrec{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:14px;background:rgba(227,106,90,.1);color:var(--tx);font-size:14px}
+.vrec .num{margin-inline-start:auto;font-variant-numeric:tabular-nums}
+.vdot{width:10px;height:10px;border-radius:5px;background:var(--red);animation:aipulse 1s ease-in-out infinite}
+.vclip{padding:10px 12px;border-radius:14px;background:rgba(255,255,255,.04)}
+.vclip audio{width:100%;height:38px;color-scheme:dark}
+.vclip.missing audio{opacity:.35}
+.vmeta{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px;font-size:12px;flex-wrap:wrap}
+.vact{display:flex;align-items:center;gap:6px}
+.vact .ib{width:32px;height:32px}
+.pill.ai{color:var(--sand)}
+.vtag{display:inline-flex;align-items:center;gap:2px;margin-inline-end:6px;vertical-align:-3px;color:var(--sand)}
+.vtag svg{width:13px;height:13px}
