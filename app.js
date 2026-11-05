@@ -655,6 +655,8 @@ async function gemini(prompt, extra = []) {
       const t = await r.text(); let msg = 'error ' + r.status; try { msg = JSON.parse(t).error.message || msg; } catch { }
       const e = new Error(r.status + ' ' + t.slice(0, 300)); e.status = r.status; e.msg = msg;
       e.code = r.status === 429 ? 'limit' : /API_KEY_INVALID|API key not valid|API key expired/i.test(t) ? 'key' : 'err';
+      /* this key's quota for this model is used up for now: every model has its own quota, so try the next one */
+      if (r.status === 429) { last = e; continue; }
       /* this model is busy right now (high demand / overloaded): wait a moment, try once more, then move to another model */
       if (r.status === 503 || r.status === 500 || r.status === 504 || /high demand|overloaded|unavailable|try again later/i.test(msg)) {
         e.code = 'busy'; last = e;
@@ -679,7 +681,7 @@ async function gemini(prompt, extra = []) {
 function gemFail(e) {
   console.warn('gemini', e);
   const c = e && e.code;
-  toast(c === 'nokey' ? 'Add your Gemini key in Settings first' : c === 'key' ? 'Gemini didn’t accept the key — check it in Settings' : c === 'limit' ? 'Gemini’s free limit is reached for now — try again in a minute' : c === 'busy' ? 'Gemini is busy right now — your recording is saved, try ✦ again in a minute' : !navigator.onLine ? 'You’re offline' : 'Gemini couldn’t answer' + (e && e.msg ? ': ' + String(e.msg).slice(0, 110) : ' — try again'));
+  toast(c === 'nokey' ? 'Add your Gemini key in Settings first' : c === 'key' ? 'Gemini didn’t accept the key — check it in Settings' : c === 'limit' ? 'Your Gemini API key reached its usage limit for now — try again later, or turn on billing for the key (see Settings)' : c === 'busy' ? 'Gemini is busy right now — your recording is saved, try ✦ again in a minute' : !navigator.onLine ? 'You’re offline' : 'Gemini couldn’t answer' + (e && e.msg ? ': ' + String(e.msg).slice(0, 110) : ' — try again'));
 }
 function gemContext() {
   const d = new Date();
@@ -2624,7 +2626,7 @@ function settingsSheet() {
     <div class="field"><span class="lb">Status</span><span style="font-size:14px">${gemOn() ? 'Ready' + (db.prefs.geminiModel ? ' · ' + esc(db.prefs.geminiModel) : '') : 'Not set'}</span></div>
     ${gemOn() ? `<div class="field"><span class="lb" style="color:var(--tx)">Write out voice notes automatically</span><button class="sw blue ${db.prefs.autoTx ? 'on' : ''}" data-act="auto-tx" role="switch" aria-checked="${!!db.prefs.autoTx}" aria-label="Write out voice notes automatically"></button></div>` : ''}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px"><button class="btn" data-act="gem-save">Save key</button>${gemOn() ? '<button class="btn" data-act="gem-clear">Remove key</button>' : '<a class="btn" style="text-decoration:none" target="_blank" rel="noopener" href="https://aistudio.google.com/apikey">Get a free key</a>'}</div>
-    <p class="mut" style="margin:10px 2px 0;font-size:13px;line-height:1.6">With a key, ${SPARK} buttons appear: turn any text or note into tasks, plan a project’s stages, and read your Review numbers. Text is sent to Google only when you press one. The key is kept in your private data file in Drive, so you enter it once.</p>`)}
+    <p class="mut" style="margin:10px 2px 0;font-size:13px;line-height:1.6">With a key, ${SPARK} buttons appear: turn any text or note into tasks, plan a project’s stages, and read your Review numbers. Text is sent to Google only when you press one. The key is kept in your private data file in Drive, so you enter it once.<br>An API key has its own limits, separate from a Gemini app subscription. A free key allows a set number of requests per minute and per day; for more, turn on billing for the key’s project in <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color:var(--sand)">AI Studio</a>.</p>`)}
   ${NATIVE ? sec('Home screen', `<button class="btn full" data-act="pin-widget">Add the widget to your home screen</button><p class="mut" style="margin:10px 0 0;font-size:13px;line-height:1.6">Shows today's events and urgent tasks. Long-press the app icon for quick actions.</p>`) : sec('Install', `${/Android/i.test(navigator.userAgent) ? `<a class="btn full" style="text-decoration:none;margin-bottom:10px" href="${APK_URL}">Download the Android app (with widget)</a>` : ''}` + (deferredPrompt ? '<button class="btn full" data-act="install">Install Zerodocs control on this device</button>' : '<p class="mut" style="margin:0;font-size:13px;line-height:1.6">Chrome on Android: menu ⋮ › Add to Home screen / Install app. Chrome on Mac: the install icon in the address bar, or menu › Cast, save and share › Install page as app.</p>'))}
   ${sec('Quick add tips', `<p class="mut" style="margin:0;font-size:13px;line-height:1.8" dir="auto">غداً · بعد غد · الخميس · 15/11 · بعد 3 أيام · ٤م · 16:30 · عاجل أو ! · #مشروع · كل شهر / كل أسبوع / كل يوم<br>Sections: #housing #zerodocs #dorba #outsource #personal (or #سكن #دربة #شخصي). Inside a section tab, new tasks go to that section automatically.<br>Start with @ (or اجتماع + time) to create a Google Calendar event.<br>Press N on a keyboard to jump to quick add.</p>`)}
   <button class="btn danger full" style="margin-top:26px" data-act="signout">Sign out on this device</button>`;
