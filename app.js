@@ -601,7 +601,7 @@ async function gtSync(force) {
   } catch (e) { console.warn('google tasks', e); gtSetErr(e); }
   finally { gtBusy = false; }
   if (changed) { persist(); LS.set('dirty', true); softRender(); }
-  if (ui.sheet && ui.sheet.type === 'settings') renderSheet();
+  if (ui.sheet && ui.sheet.type === 'settings' && !typingInSheet()) renderSheet();
   return changed;
 }
 function gtStatusHTML() {
@@ -697,7 +697,7 @@ async function uploadAudio() {
       cur.audio = (cur.audio || []).map(x => x.id === a.id ? { ...x, id, local: false } : x); cur.updatedAt = now();
       IDB.del(a.id); save();
     }
-    if (ui.sheet && ui.sheet.type === 'note') { richSave(); renderSheet(); }
+    if (ui.sheet && ui.sheet.type === 'note' && !typingInSheet()) { richSave(); renderSheet(); }
   } catch (e) { console.error(e); }
   finally { uploadingAud = false; }
 }
@@ -1157,9 +1157,13 @@ function renderMain() {
   if (ui.view === 'notes') drawThumbs();
   document.querySelectorAll('.pbrief').forEach(el => { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; });
 }
-function softRender() {
+/* true while the cursor is in a field of an open sheet or note (including the note's rich text) */
+function typingInSheet() {
   const a = document.activeElement;
-  if (a && a.closest && a.closest('.sheet, .writer') && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) { renderMain(); return; }
+  return !!(a && a.closest && a.closest('.sheet, .writer, #sheet-root') && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable));
+}
+function softRender() {
+  if (typingInSheet()) { renderMain(); return; }
   renderMain(); if (ui.sheet && ui.sheet.type !== 'event') renderSheet();
 }
 function viewHTML() {
@@ -1195,7 +1199,7 @@ function periodLabel(rep, k) {
 }
 const listChecks = (l, k) => (l.checks && l.checks[k]) || [];
 function newList(areaId, kind = 'list') {
-  const l = { id: uid(), name: '', areaId, kind, htype: kind === 'habit' ? 'yn' : undefined, unit: '', repeat: kind === 'habit' ? 'daily' : '', items: [], checks: {}, vals: {}, createdAt: new Date().toISOString(), updatedAt: now(), deleted: false };
+  const l = { id: uid(), name: '', areaId, kind, htype: kind === 'habit' ? 'yn' : undefined, draft: kind === 'habit' ? true : undefined, unit: '', repeat: kind === 'habit' ? 'daily' : '', items: [], checks: {}, vals: {}, createdAt: new Date().toISOString(), updatedAt: now(), deleted: false };
   db.lists[l.id] = l; save(); return l;
 }
 function updList(l, ch) { Object.assign(l, ch, { updatedAt: now() }); save(); }
@@ -1324,7 +1328,22 @@ function habitCardHTML(l) {
     ${habitGrid(l, m, false)}
   </button>`;
 }
+/* a new habit: name it, pick its kind (and unit) once — then it only shows its calendar */
+function habitSetupSheet(l) {
+  return `
+  <div class="sheet-top"><button class="ib" data-act="close-sheet" aria-label="Close">${I.l}</button><span class="crumb">New habit</span><span style="width:40px"></span></div>
+  <textarea id="l-name" class="title-in" rows="1" dir="auto" placeholder="Habit, e.g. الوزن or رياضة">${esc(l.name || '')}</textarea>
+  ${sec('What do you track?', `<div class="htypes">
+    <button class="htypeb ${l.htype !== 'num' ? 'on' : ''}" data-act="htype" data-id="${esc(l.id)}" data-v="yn"><span class="ic"><i class="hy">${I.check}</i><i class="hn">${I.x}</i></span><b>Did it / didn’t</b><small>Choose ✓ or ✗ for each day</small></button>
+    <button class="htypeb ${l.htype === 'num' ? 'on' : ''}" data-act="htype" data-id="${esc(l.id)}" data-v="num"><span class="ic num">123</span><b>Number</b><small>Type a value each day, like weight</small></button>
+  </div>
+  ${l.htype === 'num' ? `<div class="card" style="margin-top:10px"><div class="field"><label for="h-unit">Unit</label><input id="h-unit" class="tin" data-lid="${esc(l.id)}" dir="auto" placeholder="kg, steps, OMR…" value="${esc(l.unit || '')}" style="max-width:160px;text-align:end"></div></div>` : ''}
+  `)}
+  <button class="btn pri full" style="margin-top:18px" data-act="h-create" data-id="${esc(l.id)}">Create habit</button>
+  <p class="mut" style="font-size:12px;margin:10px 2px 0;text-align:center">The kind${l.htype === 'num' ? ' and unit' : ''} can’t be changed later.</p>`;
+}
 function habitSheet(l) {
+  if (l.draft) return habitSetupSheet(l);
   const td = today(), m = (ui.hMonth && ui.hMonth[l.id]) || td.slice(0, 7);
   const sel = ui.hSel && ui.hSel[l.id], v = sel ? hv(l, sel) : undefined;
   const picker = !sel ? '<p class="hhint">Tap a day to fill it in</p>' : l.htype === 'num'
@@ -1339,12 +1358,7 @@ function habitSheet(l) {
     ${habitGrid(l, m, true)}
     ${picker}
   </div>
-  ${sec('Type', `<div class="htypes">
-    <button class="htypeb ${l.htype !== 'num' ? 'on' : ''}" data-act="htype" data-id="${esc(l.id)}" data-v="yn"><span class="ic"><i class="hy">${I.check}</i><i class="hn">${I.x}</i></span><b>Did it / didn’t</b><small>Choose ✓ or ✗ for each day</small></button>
-    <button class="htypeb ${l.htype === 'num' ? 'on' : ''}" data-act="htype" data-id="${esc(l.id)}" data-v="num"><span class="ic num">123</span><b>Number</b><small>Type a value each day, like weight</small></button>
-  </div>
-  ${l.htype === 'num' ? `<div class="card" style="margin-top:10px"><div class="field"><label for="h-unit">Unit</label><input id="h-unit" class="tin" data-lid="${esc(l.id)}" dir="auto" placeholder="kg, steps, OMR…" value="${esc(l.unit || '')}" style="max-width:160px;text-align:end"></div></div>` : ''}
-  ${n ? `<p class="mut" style="font-size:12px;margin:10px 2px 0">${n} ${n === 1 ? 'day' : 'days'} recorded.</p>` : ''}`)}`;
+  ${n ? `<p class="mut" style="font-size:12px;margin:12px 2px 0">${n} ${n === 1 ? 'day' : 'days'} recorded · ${l.htype === 'num' ? 'Number' + (l.unit ? ' (' + esc(l.unit) + ')' : '') : '✓ / ✗'}</p>` : ''}`;
 }
 /* one card per habit, up with the rest of the Personal stats */
 function habitStatsHTML(aid) {
@@ -1664,6 +1678,7 @@ function richToolsState() {
   const db1 = tb.querySelector('[data-act=ndir-toggle]'); if (db1 && db1.dataset.cur !== d) { db1.dataset.cur = d; db1.innerHTML = d === 'rtl' ? I.dirRtl : I.dirLtr; }
 }
 document.addEventListener('selectionchange', () => { if ($('#n-rich')) richToolsState(); });
+document.addEventListener('pointerdown', e => { if (!e.target.closest || !e.target.closest('#ntools .ng.fold')) document.querySelectorAll('#ntools .ng.fold.open').forEach(x => x.classList.remove('open')); }, true);
 /* keep the text selected when a format button is pressed */
 document.addEventListener('pointerdown', e => { if (e.target.closest && e.target.closest('#ntools [data-fmt], #ntools [data-act=ndir-toggle]')) e.preventDefault(); });
 document.addEventListener('paste', e => {
@@ -1675,8 +1690,8 @@ document.addEventListener('paste', e => {
 function noteToolsHTML(n) {
   const c = noteColor(n);
   return `<div class="ntools" id="ntools" role="toolbar" aria-label="Formatting">
-    <div class="ng"><button data-act="nfmt" data-fmt="h1" aria-label="Heading 1">H1</button><button data-act="nfmt" data-fmt="h2" aria-label="Heading 2">H2</button><button data-act="nfmt" data-fmt="p" aria-label="Body text">Text</button></div>
-    <div class="ng"><button data-act="nfmt" data-fmt="bold" aria-label="Bold"><b>B</b></button><button data-act="nfmt" data-fmt="regular" aria-label="Regular">Aa</button><button data-act="nfmt" data-fmt="light" aria-label="Light"><span style="font-weight:300">Aa</span></button></div>
+    <div class="ng fold" data-g="blk"><button data-act="nfmt" data-fmt="h1" aria-label="Heading 1">H1</button><button data-act="nfmt" data-fmt="h2" aria-label="Heading 2">H2</button><button class="on" data-act="nfmt" data-fmt="p" aria-label="Body text">Text</button></div>
+    <div class="ng fold" data-g="wt"><button data-act="nfmt" data-fmt="bold" aria-label="Bold"><b>B</b></button><button class="on" data-act="nfmt" data-fmt="regular" aria-label="Regular">Aa</button><button data-act="nfmt" data-fmt="light" aria-label="Light"><span style="font-weight:300">Aa</span></button></div>
     <button class="ndir1" data-act="ndir-toggle" data-cur="ltr" aria-label="Text direction" title="Text direction (right-to-left / left-to-right)">${I.dirLtr}</button>
     <button class="ncol" data-act="ncolors" aria-label="Page colour" aria-expanded="${!!ui.nColors}"><i style="background:${c}"></i></button>
   </div>
@@ -2310,7 +2325,7 @@ window.addEventListener('popstate', () => { if (ui.sheet) { cleanupNote(); ui.sh
 /* a note left empty disappears when you close it */
 function cleanupNote() {
   const s = ui.sheet;
-  if (s && s.type === 'list') { const l = db.lists[s.id]; if (l && !l.deleted && !(l.name || '').trim() && !l.items.length) { updList(l, { deleted: true }); } return; }
+  if (s && s.type === 'list') { const l = db.lists[s.id]; if (l && !l.deleted && !(l.name || '').trim() && !l.items.length) { updList(l, { deleted: true }); } else if (l && l.draft) { updList(l, { draft: false }); } return; }
   if (!s || s.type !== 'note') return;
   const n = db.notes[s.id]; if (!n) return;
   clearTimeout(typeT);
@@ -2545,6 +2560,9 @@ document.addEventListener('click', e => {
     case 'hpick': { ui.hSel = ui.hSel || {}; ui.hSel[el.dataset.id] = el.dataset.d; renderSheet(); setTimeout(() => { const i = $('#hp-num'); if (i) i.focus(); }, 40); break; }
     case 'hset': { const l = db.lists[el.dataset.id]; const d = ui.hSel && ui.hSel[el.dataset.id]; if (!l || !d) break; const vals = { ...(l.vals || {}) }; if (el.dataset.v === '') delete vals[d]; else vals[d] = el.dataset.v === '1'; updList(l, { vals }); ui.hSel[l.id] = null; renderSheet(); renderMain(); break; }
     case 'hsave': habitSaveNum(el.dataset.id); break;
+    case 'h-create': { const l = db.lists[el.dataset.id]; if (!l) break; const nm = $('#l-name'); const name = (nm ? nm.value : l.name || '').trim();
+      if (!name) { toast('Give the habit a name first'); if (nm) nm.focus(); break; }
+      const u = $('#h-unit'); updList(l, { name, unit: l.htype === 'num' && u ? u.value.trim() : (l.unit || ''), draft: false }); renderSheet(); renderMain(); break; }
     case 'proj-prio': { const p = db.projects[ui.projectId]; if (p) { upd(p, { priority: +el.dataset.v }); renderMain(); } break; }
     case 'hcell': {
       const l = db.lists[el.dataset.id]; if (!l) break; const d = el.dataset.d;
@@ -2561,7 +2579,12 @@ document.addEventListener('click', e => {
       if (Object.keys(l.vals || {}).length && Object.keys(vals).length < Object.keys(l.vals || {}).length && !confirm('Days recorded with the other type will be cleared. Switch?')) break;
       updList(l, { htype: v, vals }); renderSheet(); renderMain(); break; }
     case 'ndir-toggle': richDirToggle(); break;
-    case 'nfmt': { const f = el.dataset.fmt; if (f === 'h1' || f === 'h2' || f === 'p') richBlock(f); else richWeight(f); richToolsState(); break; }
+    case 'nfmt': {
+      /* folded: the first tap opens the three choices, the next tap picks one and folds them again */
+      const g = el.closest('.ng.fold');
+      if (g && !g.classList.contains('open')) { document.querySelectorAll('#ntools .ng.fold.open').forEach(x => x.classList.remove('open')); g.classList.add('open'); break; }
+      const f = el.dataset.fmt; if (f === 'h1' || f === 'h2' || f === 'p') richBlock(f); else richWeight(f);
+      if (g) g.classList.remove('open'); richToolsState(); break; }
     case 'ncolors': ui.nColors = !ui.nColors; renderSheet(); break;
     case 'ncolor': { const n = ui.sheet && db.notes[ui.sheet.id]; if (n) { n.color = el.dataset.v === NOTE_COLORS[0][0] ? null : el.dataset.v; n.updatedAt = now(); save(); ui.nColors = false; renderSheet(); } break; }
     case 'list-edit': if (db.lists[el.dataset.id]) openSheet({ type: 'list', id: el.dataset.id }); break;

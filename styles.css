@@ -817,3 +817,8 @@ a{color:var(--sand2)}
 /* v19: single text-direction button, share */
 .ntools .ndir1{width:44px;height:40px;border-radius:12px;border:0;background:rgba(255,255,255,.05);color:var(--tx2);display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .ntools .ndir1:active{background:var(--sand);color:var(--ink)}
+
+/* v20: heading & weight fold into one chip each */
+.ntools .ng.fold:not(.open) button:not(.on){display:none}
+.ntools .ng.fold:not(.open) button.on{background:transparent;color:var(--tx)}
+.ntools .ng.fold:not(.open) button.on::after{content:'';display:inline-block;width:6px;height:6px;margin-inline-start:7px;border-right:1.6px solid currentColor;border-bottom:1.6px solid currentColor;transform:translateY(-2px) rotate(45deg);opacity:.7}
