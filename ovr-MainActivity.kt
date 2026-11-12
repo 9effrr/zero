@@ -53,6 +53,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private var fileCallback: ValueCallback<Array<Uri>>? = null
+    private var printView: WebView? = null   // kept alive while Android prints it
     private val fileLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         fileCallback?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(r.resultCode, r.data))
         fileCallback = null
@@ -293,6 +294,24 @@ class MainActivity : ComponentActivity() {
         }
 
         /* share a note's text, or a recording, through Android's share sheet */
+        /* project brief → Android's print screen, where "Save as PDF" keeps it as a file */
+        @JavascriptInterface fun printHtml(title: String, html: String) = runOnUiThread {
+            val w = WebView(this@MainActivity)
+            w.settings.javaScriptEnabled = false
+            w.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView, url: String?) {
+                    try {
+                        val pm = getSystemService(android.content.Context.PRINT_SERVICE) as android.print.PrintManager
+                        val name = title.ifBlank { "Project" }
+                        pm.print(name, view.createPrintDocumentAdapter(name),
+                            android.print.PrintAttributes.Builder().setMediaSize(android.print.PrintAttributes.MediaSize.ISO_A4).build())
+                    } catch (e: Exception) { toast("Couldn't open printing") }
+                }
+            }
+            printView = w
+            w.loadDataWithBaseURL("https://appassets.androidplatform.net/", html, "text/html", "UTF-8", null)
+        }
+
         @JavascriptInterface fun shareText(title: String, text: String) = runOnUiThread {
             val i = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_SUBJECT, title).putExtra(Intent.EXTRA_TEXT, text)
             try { startActivity(Intent.createChooser(i, "Share note")) } catch (e: Exception) { toast("Couldn't share") }

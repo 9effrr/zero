@@ -53,6 +53,8 @@ function toast(msg) {
 }
 
 const I = {
+  pdf: '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 18v-6M9.5 15.5 12 18l2.5-2.5"/></svg>',
+  people: '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3.2 2.9-5 5.5-5s4.9 1.8 5.5 5"/><path d="M16 5.2a3 3 0 0 1 0 5.6M17.5 14.3c1.7.6 2.8 2.2 3.1 4.7"/></svg>',
   share: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/></svg>',
   dirLtr: '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 10v5h2V4h2v11h2V4h2V2H9C6.79 2 5 3.79 5 6s1.79 4 4 4zm12 8l-4-4v3H5v2h12v3l4-4z"/></svg>',
   dirRtl: '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M10 10v5h2V4h2v11h2V4h2V2h-8C7.79 2 6 3.79 6 6s1.79 4 4 4zm-2 7v-3l-4 4 4 4v-3h12v-2H8z"/></svg>',
@@ -94,12 +96,23 @@ const taskArea = t => t.areaId || (t.projectId && db.projects[t.projectId] && db
 const notes = () => Object.values(db.notes).filter(n => !n.deleted).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 const adot = a => a ? `<i class="adot" style="background:${a.color}"></i>` : '';
 
-function persist() { LS.set('db', db); }
-function save() { persist(); LS.set('dirty', true); scheduleSync(); }
+/* my own data, without the shared projects (those live in their own Drive files) */
+function ownDb() {
+  const o = { ...db, tasks: {}, projects: {} };
+  for (const k in db.tasks) if (!db.tasks[k].sh) o.tasks[k] = db.tasks[k];
+  for (const k in db.projects) if (!db.projects[k].sh) o.projects[k] = db.projects[k];
+  return o;
+}
+function persist() { LS.set('db', ownDb()); }
+function save() { persist(); LS.set('dirty', true); scheduleSync(); if (typeof scheduleShSync === 'function') scheduleShSync(); }
 
-const tasks = () => Object.values(db.tasks).filter(t => !t.deleted);
+/* tasks of shared projects show in my lists only when they are mine (assigned to me, or unassigned in a project I own);
+   the project page shows all of them (allTasks) */
+const shMine = t => !t.sh || (t.assignee ? t.assignee === me() : shRole(t.sh) === 'owner');
+const allTasks = () => Object.values(db.tasks).filter(t => !t.deleted);
+const tasks = () => Object.values(db.tasks).filter(t => !t.deleted && shMine(t));
 const projects = () => Object.values(db.projects).filter(p => !p.deleted).sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
-const areaProjects = aid => projects().filter(p => (p.areaId || null) === (aid || null));
+const areaProjects = aid => projects().filter(p => (p.areaId || null) === (aid || null) && (!p.sh || shRole(p.sh) === 'owner'));
 const projName = id => (id && db.projects[id] && !db.projects[id].deleted ? db.projects[id].name : '');
 const stageName = (pid, sid) => { const p = db.projects[pid]; const s = p && (p.stages || []).find(x => x.id === sid); return s ? s.name : ''; };
 const isOverdue = t => !t.done && t.due && t.due < today();
@@ -127,12 +140,18 @@ function newTask(p = {}) {
     subtasks: [], links: [], images: [], repeat: null, done: false, doneAt: null, postponed: 0,
     createdAt: new Date().toISOString(), updatedAt: now(), deleted: false, ...p
   };
+  const sp = t.projectId && db.projects[t.projectId];
+  if (sp && sp.sh) { t.sh = sp.sh; t.by = me(); }
   db.tasks[t.id] = t;
   addLog('created', t);
   save();
   return t;
 }
-function upd(t, patch) { Object.assign(t, patch, { updatedAt: now() }); save(); }
+function upd(t, patch) {
+  if (t && t.sh && !shCanEdit(t.sh)) { toast('This shared project is view-only for you'); return; }
+  if (t && t.sh && patch.done === true) patch = { ...patch, doneBy: me() };
+  Object.assign(t, patch, { updatedAt: now() }); save();
+}
 function setDue(t, d) {
   d = d || null;
   if (t.due && d && d > t.due && !t.done) {
@@ -276,6 +295,7 @@ async function gfetch(url, opts = {}, retried = false) {
   return r;
 }
 async function afterAuth() {
+  setTimeout(() => { const j = LS.get('pendingJoin', null); if (j && authed()) { LS.del('pendingJoin'); shJoin(j); } }, 600);
   /* Gemini was removed: forget the key everywhere */
   if (db.prefs && ('geminiKey' in db.prefs || 'geminiModel' in db.prefs || 'autoTx' in db.prefs)) { const { geminiKey, geminiModel, autoTx, ...rest } = db.prefs; db.prefs = { ...rest, updatedAt: now() }; save(); }
   renderMain();
@@ -293,7 +313,7 @@ function signOut() {
   if (!confirm('Sign out of Zerodocs control on this device? Your data stays safe in your Google Drive.')) return;
   try { if (NATIVE) ZeroNative.signOut(); } catch { }
   try { if (token && window.google) google.accounts.oauth2.revoke(token.access_token, () => { }); } catch { }
-  ['token', 'signedIn', 'email', 'fileId', 'folderId', 'imgFolderId', 'audFolderId', 'gtSince', 'gtErr', 'gtLastOk', 'db', 'cals', 'events', 'dirty', 'lastSync'].forEach(LS.del);
+  ['token', 'signedIn', 'email', 'fileId', 'folderId', 'imgFolderId', 'audFolderId', 'shared', 'shFolderId', 'pendingJoin', 'gtSince', 'gtErr', 'gtLastOk', 'db', 'cals', 'events', 'dirty', 'lastSync'].forEach(LS.del);
   token = null; db = freshDb(); evCache = {}; cals = [];
   ui.sheet = null; renderSheet(); renderMain();
 }
@@ -330,7 +350,7 @@ async function ensureDataFile() {
   const folder = await ensureFolder();
   const f = await findOne(`name='${CFG.file}' and '${folder}' in parents and trashed=false`);
   if (f) { LS.set('fileId', f.id); return { id: f.id, created: false }; }
-  const nf = await createFile(CFG.file, JSON.stringify(db), 'application/json', folder);
+  const nf = await createFile(CFG.file, JSON.stringify(ownDb()), 'application/json', folder);
   LS.set('fileId', nf.id); return { id: nf.id, created: true };
 }
 async function readRemote(id) {
@@ -472,13 +492,13 @@ async function sync(retried) {
       }
       if (remote.data && remote.data.tasks) db = merge(db, remote.data);
       persist();
-      const txt = JSON.stringify(db);
+      const txt = JSON.stringify(ownDb());
       if (txt !== remote.txt) await writeRemote(id, txt);
     }
     LS.set('dirty', false); LS.set('lastSync', now());
     setSync('ok');
     softRender();
-    uploadImages(); uploadAudio();
+    uploadImages(); uploadAudio(); shSyncAll();
     if (gtOn()) gtSync().then(ch => { if (ch) scheduleSync(800); });
   } catch (e) {
     console.error(e); setSync('err');
@@ -506,7 +526,7 @@ function gtBody(t) {
     due: t.due ? t.due + 'T00:00:00.000Z' : null
   };
 }
-const gtWants = t => t.updatedAt > (t.gtPushed || 0) && (t.gtId || (!t.deleted && !t.done && (t.title || '').trim()));
+const gtWants = t => !t.sh && t.updatedAt > (t.gtPushed || 0) && (t.gtId || (!t.deleted && !t.done && (t.title || '').trim()));
 function gtPull(g, byG, first) {
   const gu = Date.parse(g.updated) || 0;
   let t = byG[g.id] || db.tasks['g_' + g.id];
@@ -772,6 +792,323 @@ function voiceHTML(n) {
       <span class="vact"><button class="ib" data-act="rec-share" data-id="${esc(c.id)}" aria-label="Share recording" title="Share">${I.share}</button><button class="ib" data-act="rec-del" data-id="${esc(c.id)}" aria-label="Delete recording">${I.trash}</button></span></div></div>`).join('')}</div>`;
 }
 
+/* ---------------- shared projects (Google Drive) ----------------
+   A shared project lives in its own file in the owner's Drive (Zero › shared › "<name> · Ctrl Z.json"),
+   shared with each member through Google Drive. Every member's app reads and writes that file about once
+   a minute and merges it record by record (newest edit wins), so people working on different tasks never
+   overwrite each other. In memory the project and its tasks sit in db.projects / db.tasks with sh = fileId,
+   so every screen works on them as usual; they are kept out of each person's own data file. */
+const APP_NUM = '308212712343';                 /* Google Cloud project number (Picker needs it) */
+const PICKER_KEY = '';                          /* browser API key for Google Picker, used when joining */
+const JOIN_BASE = 'https://9effrr.github.io/zero/';
+let SH = LS.get('shared', {});                  /* fileId -> { fileId, data, at, lost } */
+let shBusy = false, shTimer = null;
+const me = () => (LS.get('email', '') || '').toLowerCase();
+const shIds = () => Object.keys(SH);
+function shPersist() { try { LS.set('shared', SH); } catch { } }
+const shStrip = r => { const { sh, gtId, gtAt, gtPushed, ...o } = r; return o; };
+function shRole(fid) {
+  const d = SH[fid] && SH[fid].data; if (!d) return 'writer';
+  if ((d.owner || '').toLowerCase() === me()) return 'owner';
+  const m = d.members && d.members[me()];
+  return m && !m.removed ? (m.role === 'reader' ? 'reader' : 'writer') : 'writer';
+}
+const shCanEdit = fid => shRole(fid) !== 'reader';
+function shMembers(fid) {
+  const d = SH[fid] && SH[fid].data; if (!d) return [];
+  return Object.values(d.members || {}).filter(m => !m.removed).sort((a, b) => (a.role === 'owner' ? -1 : b.role === 'owner' ? 1 : (a.name || a.email).localeCompare(b.name || b.email)));
+}
+function shName(fid, email) {
+  if (!email) return '';
+  if (email.toLowerCase() === me()) return 'You';
+  const m = SH[fid] && SH[fid].data && SH[fid].data.members && SH[fid].data.members[email.toLowerCase()];
+  return (m && m.name) || email.split('@')[0];
+}
+function initials(s) {
+  const w = String(s || '?').replace(/@.*/, '').split(/[\s._-]+/).filter(Boolean);
+  return ((w[0] || '?')[0] + (w[1] ? w[1][0] : '')).toUpperCase();
+}
+const AV_COLORS = ['#9CC2A4', '#D9B48F', '#93AFC2', '#B7A4D0', '#E39A86', '#C9B98A', '#8FB8B8'];
+function avatar(fid, email, cls = '') {
+  const n = shName(fid, email); let h = 0; for (const c of email || '') h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return `<span class="av ${cls}" style="background:${AV_COLORS[h % AV_COLORS.length]}" title="${esc(n)}" aria-label="${esc(n)}">${esc(initials(shName(fid, email) === 'You' ? email : n))}</span>`;
+}
+/* put a file's project + tasks into db, keeping any newer local edit */
+function shInject(fid, force) {
+  const s = SH[fid]; if (!s || !s.data || !s.data.project) return;
+  const keep = (loc, rem) => (!force && loc && loc.sh === fid && (loc.updatedAt || 0) >= (rem.updatedAt || 0)) ? loc : { ...rem, sh: fid };
+  const p = s.data.project;
+  db.projects[p.id] = keep(db.projects[p.id], p);
+  for (const t of Object.values(s.data.tasks || {})) db.tasks[t.id] = keep(db.tasks[t.id], t);
+}
+function shRemoveLocal(fid) {
+  for (const k in db.tasks) if (db.tasks[k].sh === fid) delete db.tasks[k];
+  for (const k in db.projects) if (db.projects[k].sh === fid) delete db.projects[k];
+}
+function shProject(fid) { const d = SH[fid] && SH[fid].data; return d && d.project ? db.projects[d.project.id] : null; }
+/* the parts of db that belong to this file, as they are on this device now */
+function shCollect(fid) {
+  const d = SH[fid].data; const pid = d.project.id;
+  const p = db.projects[pid];
+  const tasksOut = {};
+  for (const t of Object.values(db.tasks)) {
+    if (t.sh === fid) tasksOut[t.id] = shStrip(t);
+    else if (!t.sh && t.projectId === pid) { t.sh = fid; t.by = t.by || me(); tasksOut[t.id] = shStrip(t); } /* added here since the last sync */
+  }
+  return { project: p ? shStrip(p) : d.project, tasks: tasksOut };
+}
+const newer = (a, b) => (!a ? b : !b ? a : (b.updatedAt || 0) > (a.updatedAt || 0) ? b : a);
+async function shSyncOne(fid) {
+  const s = SH[fid]; if (!s) return false;
+  let remote;
+  try { remote = await (await gfetch(`${DRV}/files/${encodeURIComponent(fid)}?alt=media`)).json(); }
+  catch (e) {
+    if (e.status === 404 || e.status === 403) { s.lost = true; shPersist(); return false; } /* removed, or access taken away */
+    throw e;
+  }
+  if (!remote || remote.kind !== 'ctrlz-shared') return false;
+  s.lost = false;
+  if (!s.data) { s.data = remote; shInject(fid, true); }
+  const reader = shRole(fid) === 'reader';
+  if (reader) { s.data = remote; shInject(fid, true); s.at = now(); shPersist(); return true; }
+  const loc = shCollect(fid);
+  const merged = {
+    ...remote,
+    project: newer(remote.project, loc.project),
+    tasks: mergeMap(remote.tasks, loc.tasks),
+    members: mergeMap(remote.members, (s.data && s.data.members) || {})
+  };
+  const changed = JSON.stringify(merged) !== JSON.stringify(remote);
+  s.data = merged; shInject(fid);
+  if (changed) {
+    merged.updatedAt = now();
+    await gfetch(`${UPL}/files/${encodeURIComponent(fid)}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(merged) });
+  }
+  s.at = now(); shPersist();
+  return true;
+}
+async function shSyncAll() {
+  if (shBusy || !authed() || !navigator.onLine) return;
+  /* projects joined on another of my devices */
+  for (const fid of (db.prefs.sharedFiles || [])) if (!SH[fid]) SH[fid] = { fileId: fid, data: null, at: 0 };
+  for (const fid of shIds()) if (!(db.prefs.sharedFiles || []).includes(fid) && SH[fid].left) { delete SH[fid]; }
+  if (!shIds().length) return;
+  shBusy = true;
+  try { for (const fid of shIds()) { try { await shSyncOne(fid); } catch (e) { console.warn('shared', fid, e); } } }
+  finally { shBusy = false; shPersist(); }
+  if (!typingInSheet()) { renderMain(); if (ui.sheet && (ui.sheet.type === 'share')) renderSheet(); }
+}
+function scheduleShSync(ms = 2500) { if (!shIds().length) return; clearTimeout(shTimer); shTimer = setTimeout(shSyncAll, ms); }
+async function ensureSharedFolder() {
+  let id = LS.get('shFolderId', null); if (id) return id;
+  const parent = await ensureFolder();
+  const f = await findOne(`name='shared' and '${parent}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+  if (f) id = f.id;
+  else id = (await (await gfetch(`${DRV}/files?fields=id`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'shared', parents: [parent], mimeType: 'application/vnd.google-apps.folder' }) })).json()).id;
+  LS.set('shFolderId', id); return id;
+}
+function addSharedPref(fid) { const l = db.prefs.sharedFiles || []; if (!l.includes(fid)) { db.prefs = { ...db.prefs, sharedFiles: [...l, fid], updatedAt: now() }; save(); } }
+function dropSharedPref(fid) { db.prefs = { ...db.prefs, sharedFiles: (db.prefs.sharedFiles || []).filter(x => x !== fid), updatedAt: now() }; save(); }
+/* turn one of my projects into a shared one: it moves (with new ids) into its own Drive file */
+async function shCreate(p) {
+  const ts = allTasks().filter(t => t.projectId === p.id);
+  const at = now();
+  const np = { ...shStrip(p), id: 'sp' + uid(), updatedAt: at };
+  const tasksOut = {};
+  for (const t of ts) { const nt = { ...shStrip(t), id: 'st' + uid(), projectId: np.id, by: t.by || me(), updatedAt: at }; tasksOut[nt.id] = nt; }
+  const data = { kind: 'ctrlz-shared', v: 1, owner: me(), createdAt: new Date().toISOString(), updatedAt: at, project: np, tasks: tasksOut,
+    members: { [me()]: { email: me(), name: '', role: 'owner', updatedAt: at } } };
+  const folder = await ensureSharedFolder();
+  const f = await createFile(`${(p.name || 'Project').slice(0, 60)} · Ctrl Z.json`, JSON.stringify(data), 'application/json', folder);
+  if (!f || !f.id) throw new Error('create failed');
+  ts.forEach(t => { t.deleted = true; t.updatedAt = now(); });
+  p.deleted = true; p.updatedAt = now();
+  SH[f.id] = { fileId: f.id, data, at: now() }; shPersist();
+  addSharedPref(f.id);
+  shInject(f.id, true);
+  save();
+  return { fid: f.id, project: db.projects[np.id] };
+}
+async function shAddMember(fid, email, name, role) {
+  const s = SH[fid]; const p = shProject(fid); if (!s || !p) return;
+  email = email.trim().toLowerCase();
+  const msg = `${me()} added you to “${p.name}” in Ctrl Z. Open it here: ${JOIN_BASE}?join=${fid}`;
+  const r = await gfetch(`${DRV}/files/${encodeURIComponent(fid)}/permissions?sendNotificationEmail=true&fields=id&emailMessage=${encodeURIComponent(msg)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'user', role: role === 'reader' ? 'reader' : 'writer', emailAddress: email })
+  });
+  const pm = await r.json();
+  s.data.members = { ...(s.data.members || {}), [email]: { email, name: (name || '').trim(), role: role === 'reader' ? 'reader' : 'writer', pid: pm.id || null, updatedAt: now() } };
+  shPersist();
+  await shSyncOne(fid);
+}
+async function shRemoveMember(fid, email) {
+  const s = SH[fid]; const m = s && s.data.members && s.data.members[email]; if (!m) return;
+  if (m.pid) { try { await gfetch(`${DRV}/files/${encodeURIComponent(fid)}/permissions/${encodeURIComponent(m.pid)}`, { method: 'DELETE' }); } catch (e) { if (e.status !== 404) throw e; } }
+  s.data.members[email] = { ...m, removed: true, updatedAt: now() };
+  allTasks().filter(t => t.sh === fid && t.assignee === email).forEach(t => upd(t, { assignee: null }));
+  shPersist(); await shSyncOne(fid);
+}
+function shLeave(fid) {
+  const s = SH[fid]; if (!s) return;
+  s.left = true; shRemoveLocal(fid); delete SH[fid]; shPersist(); dropSharedPref(fid);
+}
+/* joining: the link ?join=<fileId>. Google only lets this app open a file shared with you after you pick it once */
+async function shJoin(fid) {
+  if (!fid) return;
+  fid = String(fid).trim().replace(/^.*[?&]join=/, '').replace(/[^\w-].*$/, '');
+  if (SH[fid] && SH[fid].data) { const p = shProject(fid); if (p) openProject(p.id); return; }
+  try {
+    const d = await (await gfetch(`${DRV}/files/${encodeURIComponent(fid)}?alt=media`)).json();
+    if (!d || d.kind !== 'ctrlz-shared') { toast('That link isn’t a Ctrl Z project'); return; }
+    SH[fid] = { fileId: fid, data: d, at: now() }; shPersist(); addSharedPref(fid); shInject(fid, true);
+    toast('Joined “' + d.project.name + '”'); openProject(d.project.id);
+  } catch (e) {
+    if (e.status === 404 || e.status === 403) { ui.joinFid = fid; openSheet({ type: 'join' }); return; }
+    toast('Couldn’t open the shared project — try again'); console.warn(e);
+  }
+}
+function loadPicker() {
+  return new Promise((res, rej) => {
+    if (window.google && google.picker) return res();
+    const go = () => gapi.load('picker', { callback: res, onerror: rej });
+    if (window.gapi) return go();
+    const s = document.createElement('script'); s.src = 'https://apis.google.com/js/api.js'; s.onload = go; s.onerror = rej; document.head.appendChild(s);
+  });
+}
+async function pickShared(fid) {
+  try { await loadPicker(); } catch { toast('Couldn’t load Google’s file picker'); return; }
+  const tk = await getToken();
+  const view = new google.picker.DocsView(google.picker.ViewId.DOCS).setMode(google.picker.DocsViewMode.LIST).setIncludeFolders(false).setOwnedByMe(false);
+  if (fid && view.setFileIds) view.setFileIds(fid);
+  const b = new google.picker.PickerBuilder().addView(view).setOAuthToken(tk).setAppId(APP_NUM).setTitle('Choose the shared Ctrl Z project')
+    .setCallback(async d => {
+      if (d.action !== google.picker.Action.PICKED || !d.docs || !d.docs[0]) return;
+      closeSheetQuiet(); await shJoin(d.docs[0].id);
+    });
+  if (PICKER_KEY) b.setDeveloperKey(PICKER_KEY);
+  try { b.setOrigin(location.origin); } catch { }
+  b.build().setVisible(true);
+}
+function joinSheet() {
+  return `<div class="sheet-top"><button class="ib" data-act="close-sheet" aria-label="Close">${I.l}</button><span class="crumb">Shared project</span><span style="width:40px"></span></div>
+  <h2 style="margin:6px 2px 8px;font-size:22px">Open the project you were invited to</h2>
+  <p class="mut" style="font-size:14px;line-height:1.7;margin:0 2px 18px">Google asks you to choose the shared file once, so Ctrl Z can open it. Tap the button, pick the project (it ends in “· Ctrl Z”) and press Select.</p>
+  <button class="btn pri full" data-act="sh-pick">Choose the shared project</button>
+  ${NATIVE ? `<p class="mut" style="font-size:12px;margin:12px 2px 0;line-height:1.6">If the chooser doesn’t open here, open the invite link in Chrome once — the project then appears in this app too.</p>` : ''}`;
+}
+function shareSheet() {
+  const p = db.projects[ui.projectId]; if (!p) return '';
+  const fid = p.sh; const owner = fid && shRole(fid) === 'owner';
+  const top = `<div class="sheet-top"><button class="ib" data-act="close-sheet" aria-label="Close">${I.l}</button><span class="crumb" dir="auto">${esc(p.name)}</span><span style="width:40px"></span></div>`;
+  if (!fid) return top + `<h2 style="margin:6px 2px 8px;font-size:22px">Work on this project with others</h2>
+    <p class="mut" style="font-size:14px;line-height:1.7;margin:0 2px 16px">The project and its tasks move into a shared file in your Google Drive. Each person signs in with their own Google account and sees only the projects shared with them. Changes show up for everyone within about a minute.</p>
+    <button class="btn pri full" data-act="sh-start">Share this project</button>`;
+  const ms = shMembers(fid);
+  const link = `${JOIN_BASE}?join=${fid}`;
+  return top + `${sec('People', `<div class="card">${ms.map(m => `<div class="mrow">${avatar(fid, m.email)}<span class="mtx"><b dir="auto">${esc(m.name || m.email.split('@')[0])}${m.email === me() ? ' (you)' : ''}</b><span class="mut">${esc(m.email)}</span></span><span class="mrole">${m.role === 'owner' ? 'Owner' : m.role === 'reader' ? 'Can view' : 'Can edit'}</span>${owner && m.role !== 'owner' ? `<button class="ib" data-act="sh-rm" data-email="${esc(m.email)}" aria-label="Remove ${esc(m.email)}">${I.x || '×'}</button>` : ''}</div>`).join('')}</div>`, { right: `<span class="mut">${ms.length}</span>` })}
+  ${owner ? sec('Add someone', `<form class="card shadd" data-form="sh-add" autocomplete="off">
+      <div class="field"><label for="sh-email">Gmail</label><input id="sh-email" name="email" type="email" inputmode="email" placeholder="name@gmail.com" required></div>
+      <div class="field"><label for="sh-name">Name</label><input id="sh-name" name="name" dir="auto" placeholder="Optional"></div>
+      <div class="field"><label for="sh-role">Can</label><select id="sh-role" name="role"><option value="writer">Edit</option><option value="reader">View only</option></select></div>
+      <button class="btn pri full" type="submit" style="margin-top:6px">Add and send invite</button></form>
+      <p class="mut" style="font-size:12px;margin:8px 2px 0;line-height:1.6">Google emails them the invite. They open the link, sign in with that Gmail, and the project appears in their app.</p>`) : ''}
+  ${sec('Invite link', `<div class="card" style="padding:12px 14px"><div class="mut" style="font-size:12px;word-break:break-all;direction:ltr">${esc(link)}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px"><button class="btn" data-act="sh-copy">Copy link</button><button class="btn" data-act="sh-send">Send…</button></div></div>
+    <p class="mut" style="font-size:12px;margin:8px 2px 0">Only people added above can open it.</p>`)}
+  ${owner ? '' : `<button class="btn full" style="margin-top:18px" data-act="sh-leave">Leave this project</button>`}`;
+}
+function sharedView() {
+  const ps = shIds().map(shProject).filter(p => p && !p.deleted);
+  return `<div class="hdr"><h1>Shared</h1></div>
+  ${ps.length ? `<div class="plist">${ps.map(pcardHTML).join('')}</div>` : `<p class="mut" style="font-size:14px;line-height:1.7">Projects other people share with you appear here.</p>`}
+  ${sec('Join with a link', `<form class="inline-add" data-form="sh-join" autocomplete="off">${I.plusS}<input id="sh-join" name="v" dir="ltr" placeholder="Paste the invite link" enterkeyhint="go"><button class="go-s" type="submit">Open</button></form>`)}`;
+}
+
+/* ---------------- project PDF (brief + to-do list, white, for printing) ---------------- */
+const txtDir = s => { const m = String(s || '').match(/[A-Za-z\u00C0-\u024F]|[\u0590-\u08FF\uFB1D-\uFEFC]/); return m && /[\u0590-\u08FF\uFB1D-\uFEFC]/.test(m[0]) ? 'rtl' : 'ltr'; };
+function projectPdfHTML(p) {
+  const ts = allTasks().filter(t => t.projectId === p.id);
+  const s = projStats(p); const a = areaOf(p.areaId);
+  const fid = p.sh;
+  const day = d => d ? pd(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+  const prio = (PRIO.find(x => x[0] === (p.priority || 0)) || [0, ''])[1];
+  const meta = [a ? a.name : '', p.priority ? prio : '', p.deadline ? 'Deadline ' + day(p.deadline) : '', fid ? shMembers(fid).map(m => m.name || m.email.split('@')[0]).join(', ') : ''].filter(Boolean);
+  const row = t => {
+    const bits = [];
+    if (t.due) bits.push(`<span class="${isOverdue(t) ? 'late' : ''}">${esc(day(t.due))}${t.time ? ' ' + esc(t.time) : ''}</span>`);
+    if (t.urgent && !t.done) bits.push('<span class="late">Urgent</span>');
+    if (fid && t.assignee) { const m = (SH[fid].data.members || {})[t.assignee]; bits.push(esc((m && m.name) || t.assignee.split('@')[0])); }
+    const subs = (t.subtasks || []).map(x => `<li dir="${txtDir(x.title)}" class="${x.done ? 'done' : ''}"><i class="bx">${x.done ? '✓' : ''}</i><span dir="auto">${esc(x.title || '')}</span></li>`).join('');
+    return `<li dir="${txtDir(t.title)}" class="${t.done ? 'done' : ''}"><i class="bx">${t.done ? '✓' : ''}</i><span class="t" dir="auto">${esc(t.title || 'Untitled')}</span>${bits.length ? `<span class="m">${bits.join(' · ')}</span>` : ''}${subs ? `<ul class="subs">${subs}</ul>` : ''}</li>`;
+  };
+  const sortT = l => [...l.filter(t => !t.done).sort(byDue), ...l.filter(t => t.done)];
+  const stages = (p.stages || []).map(st => {
+    const l = ts.filter(t => t.stageId === st.id); const dn = l.filter(t => t.done).length;
+    return `<section class="stage" dir="${txtDir(st.name)}"><h2>${esc(st.name)}</h2><p class="sm">${[st.start || st.due ? `${day(st.start)}${st.start && st.due ? ' → ' : ''}${day(st.due)}` : '', `${dn} of ${l.length} done`].filter(Boolean).join(' · ')}</p>
+      <ul class="todo">${sortT(l).map(row).join('') || '<li class="none">No tasks yet</li>'}</ul></section>`;
+  }).join('');
+  const other = ts.filter(t => !t.stageId || !(p.stages || []).some(x => x.id === t.stageId));
+  const otherHTML = other.length ? `<section class="stage"><h2>${(p.stages || []).length ? 'Other tasks' : 'Tasks'}</h2><ul class="todo">${sortT(other).map(row).join('')}</ul></section>` : '';
+  const exported = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(p.name)}</title><style>
+  @page{size:A4;margin:18mm 17mm 20mm}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#fff;color:#1d2230;font:13px/1.55 -apple-system,"Segoe UI",Roboto,"Noto Sans","Noto Sans Arabic",Tahoma,Arial,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .kick{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:#9a7a5c;margin:0 0 10px}
+  h1{font-size:30px;line-height:1.2;margin:0 0 8px;font-weight:700;color:#141824}
+  .meta{color:#6b7280;font-size:12.5px;margin:0 0 22px}
+  .brief{font-size:16px;line-height:1.7;color:#2a3040;margin:0 0 24px;white-space:pre-wrap}
+  .prog{display:flex;align-items:center;gap:14px;margin:0 0 30px;color:#4b5563;font-size:12.5px}
+  .bar{flex:1;height:6px;border-radius:3px;background:#efe9e2;overflow:hidden}.bar i{display:block;height:100%;background:#c29b78;border-radius:3px}
+  .stage{margin:0 0 26px;break-inside:auto}
+  h2{font-size:17px;margin:0 0 2px;color:#141824}
+  .sm{color:#8b93a1;font-size:11.5px;margin:0 0 10px}
+  ul.todo,ul.subs{list-style:none;margin:0;padding:0}
+  ul.todo>li{display:grid;grid-template-columns:20px 1fr auto;column-gap:10px;align-items:start;padding:7px 0;break-inside:avoid}
+  .bx{width:15px;height:15px;border:1.5px solid #b9a58f;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-style:normal;font-size:11px;line-height:1;color:#fff;margin-top:2px}
+  li.done>.bx{background:#9cc2a4;border-color:#9cc2a4}
+  li.done>.t{color:#9aa1ad;text-decoration:line-through}
+  .t{font-size:13.5px;color:#1d2230}
+  .m{color:#6b7280;font-size:11.5px;white-space:nowrap;padding-top:2px;direction:ltr;unicode-bidi:isolate}
+  .sm,.meta,.prog{unicode-bidi:isolate}
+  .sm{direction:ltr;text-align:start}
+  [dir=rtl] .sm{text-align:right}
+  [dir=rtl] .meta{text-align:right}
+  .late{color:#c2410c}
+  ul.subs{grid-column:2/4;margin-top:4px}
+  ul.subs li{display:flex;gap:8px;align-items:center;font-size:12px;color:#4b5563;padding:2px 0}
+  ul.subs .bx{width:12px;height:12px;font-size:9px;margin:0}
+  ul.subs li.done .bx{background:#9cc2a4;border-color:#9cc2a4}
+  ul.subs li.done span{text-decoration:line-through;color:#9aa1ad}
+  li.none{color:#9aa1ad;font-size:12px;display:block!important}
+  .foot{margin-top:34px;color:#a0a7b3;font-size:10.5px}
+  </style></head><body>
+  <div dir="${txtDir(p.name)}"><p class="kick">Project brief</p>
+  <h1 dir="auto">${esc(p.name)}</h1>
+  ${meta.length ? `<p class="meta" dir="auto">${meta.map(esc).join(' · ')}</p>` : ''}
+  ${(p.brief || '').trim() ? `<p class="brief" dir="auto">${esc(p.brief.trim())}</p>` : ''}
+  </div><div class="prog"><span>${s.done} of ${s.total} tasks done</span><span class="bar"><i style="width:${s.pct}%"></i></span><span>${s.pct}%</span></div>
+  ${stages}${otherHTML}
+  ${!ts.length ? '<p class="sm">No tasks yet.</p>' : ''}
+  <p class="foot">Exported from Ctrl Z · ${esc(exported)}</p>
+  </body></html>`;
+}
+function exportProjectPdf(p) {
+  const html = projectPdfHTML(p);
+  if (NATIVE && ZeroNative.printHtml) { try { ZeroNative.printHtml(p.name || 'Project', html); return; } catch (e) { console.warn(e); } }
+  const f = document.createElement('iframe');
+  f.setAttribute('aria-hidden', 'true'); f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
+  document.body.appendChild(f);
+  f.onload = () => {
+    try { f.contentWindow.focus(); f.contentWindow.print(); }
+    catch { const w = window.open('', '_blank'); if (w) { w.document.write(html); w.document.close(); w.focus(); w.print(); } }
+    setTimeout(() => f.remove(), 60000);
+  };
+  f.srcdoc = html;
+  toast('Choose “Save as PDF” to keep the file');
+}
+
 /* ---------------- calendar ---------------- */
 let cals = LS.get('cals', []);
 let evCache = LS.get('events', {});
@@ -988,8 +1325,10 @@ function quickAdd(text, ctx = {}) {
 }
 
 /* ---------------- UI state ---------------- */
-const VIEWS = ['home', 'notes', ...AREAS.map(a => a.id), 'review', 'project'];
+const VIEWS = ['home', 'notes', ...AREAS.map(a => a.id), 'shared', 'review', 'project'];
 const TABS = [['home', 'Home'], ['notes', 'Notes'], ...AREAS.map(a => [a.id, a.name]), ['review', 'Review']];
+const hasShared = () => shIds().some(f => { const p = shProject(f); return p && !p.deleted && shRole(f) !== 'owner'; }) || shIds().length > 0;
+const tabsNow = () => hasShared() ? [...TABS.slice(0, -1), ['shared', 'Shared'], TABS[TABS.length - 1]] : TABS;
 const ui = {
   view: LS.get('view', 'home'), month: today().slice(0, 7), sel: today(), projectId: LS.get('projectId', null),
   sheet: null, qa: '', rDays: 14, rFrom: null, rTo: null, rEvents: null, rKey: '', showDone: false,
@@ -1045,6 +1384,8 @@ function taskMeta(t, o = {}) {
     const lbl = esc(relDay(t.due) + (t.time ? ' ' + t.time : ''));
     m.push(isOverdue(t) ? `<span class="or">${t.due < today() ? 'Overdue · ' : ''}${lbl}</span>` : (t.urgent && !t.done ? `<span class="or">${lbl}</span>` : lbl));
   } else if (t.time) m.push(esc(t.time));
+  if (t.sh && t.assignee) m.push(`<span class="who">${avatar(t.sh, t.assignee, 'sm')}${esc(shName(t.sh, t.assignee))}</span>`);
+  if (t.sh && t.done && t.doneBy && t.doneBy !== me()) m.push(`<span class="who">✓ ${esc(shName(t.sh, t.doneBy))}</span>`);
   return m.join(' · ');
 }
 function taskHTML(t, o = {}) {
@@ -1073,7 +1414,7 @@ function addForm(form, ph, o = {}) {
 function syncDot() { return `<span class="sync-dot ${({ ok: 'ok', busy: 'busy', err: 'err' }[syncState] || '')}"></span>`; }
 function sortOpen(list) { return [...list.filter(t => !t.done).sort(byDue), ...list.filter(t => t.done).sort((a, b) => ((a.doneAt || '') < (b.doneAt || '') ? 1 : -1))]; }
 function projStats(p) {
-  const ts = tasks().filter(t => t.projectId === p.id);
+  const ts = allTasks().filter(t => t.projectId === p.id);
   const done = ts.filter(t => t.done).length;
   const overdue = ts.filter(isOverdue).length;
   return { total: ts.length, done, open: ts.length - done, overdue, pct: ts.length ? Math.round(done / ts.length * 100) : 0 };
@@ -1084,6 +1425,7 @@ function pcardHTML(p) {
   return `<button class="card pcard ${p.done ? 'pdone' : ''} prio-${pr}" data-act="open-project" data-id="${esc(p.id)}" style="${a ? '--ac:' + a.color : ''}">${pr ? `<span class="pbadge">${pr === 2 ? 'Top priority' : 'Important'}</span>` : ''}
     <span style="display:flex;justify-content:space-between;gap:10px;align-items:baseline"><span class="nm" dir="auto">${p.done ? `<span class="pdk">${I.check}</span>` : ''}${esc(p.name)}</span><span class="mut" style="font-size:12px;white-space:nowrap">${p.done ? 'Completed ' + esc(shortDay(isoDay(p.doneAt || new Date().toISOString()))) : p.deadline ? 'Due ' + esc(shortDay(p.deadline)) : ''}</span></span>
     ${p.brief ? `<span class="pcbrief" dir="auto">${esc(p.brief)}</span>` : ''}
+    ${p.sh ? `<span class="pcshared"><span class="avs">${shMembers(p.sh).slice(0, 6).map(m => avatar(p.sh, m.email, 'sm')).join('')}</span><span class="mut">Shared${shRole(p.sh) !== 'owner' && SH[p.sh].data ? ' by ' + esc(shName(p.sh, SH[p.sh].data.owner)) : ''}</span></span>` : ''}
     <span class="prog"><i style="width:${s.pct}%"></i></span>
     <span class="mut" style="font-size:12px">${s.done} of ${s.total} done${s.overdue ? ` · <span class="or">${s.overdue} overdue</span>` : ''}${(p.stages || []).length ? ' · ' + p.stages.length + ' stages' : ''}</span></button>`;
 }
@@ -1099,7 +1441,7 @@ function welcomeHTML() {
   </div>`;
 }
 function openCount(aid) { const td = today(); return tasks().filter(t => !t.done && t.due && t.due <= td && (aid === undefined || taskArea(t) === aid)).length; }
-function curTab() { return ui.view === 'project' ? ((db.projects[ui.projectId] || {}).areaId || 'home') : ui.view; }
+function curTab() { if (ui.view !== 'project') return ui.view; const p = db.projects[ui.projectId] || {}; return p.sh && shRole(p.sh) !== 'owner' ? 'shared' : (p.areaId || 'home'); }
 function sideHTML() {
   const cur = curTab();
   const nav = (v, label, extra = '', dot = '') => `<button class="nav ${cur === v ? 'on' : ''}" data-act="nav" data-v="${v}"><span style="display:flex;align-items:center;gap:9px;min-width:0">${dot}${label}</span>${extra}</button>`;
@@ -1110,6 +1452,7 @@ function sideHTML() {
     ${nav('notes', 'Notes', c(notes().length))}
     <div class="grp">SECTIONS</div>
     ${AREAS.map(a => nav(a.id, esc(a.name), c(openCount(a.id)), adot(a))).join('')}
+    ${hasShared() ? nav('shared', 'Shared', c(shIds().length)) : ''}
     <div class="grp"></div>
     ${nav('review', 'Review')}
     <div class="foot">${syncDot()}<span style="overflow:hidden;text-overflow:ellipsis">${esc(LS.get('email', '') || 'Not connected')}</span></div>
@@ -1131,7 +1474,7 @@ function qaHTML(id) {
 function bottomHTML() {
   const cur = curTab();
   const tab = ([v, l]) => { const a = areaOf(v); return `<button class="${cur === v ? 'on' : ''}" data-act="nav" data-v="${v}" ${cur === v ? 'aria-current="page"' : ''}>${a ? adot(a) : ''}${l}</button>`; };
-  return `<nav class="bottom" aria-label="Main">${qaHTML('qa-m')}<div class="tabs" id="tabs">${TABS.map(tab).join('')}</div></nav>`;
+  return `<nav class="bottom" aria-label="Main">${qaHTML('qa-m')}<div class="tabs" id="tabs">${tabsNow().map(tab).join('')}</div></nav>`;
 }
 function bannerHTML() {
   if (!navigator.onLine) return `<div class="card" style="padding:10px 14px;margin-bottom:14px;font-size:13px;color:var(--mut)">Offline — your changes are saved on this device and will sync when you're back online.</div>`;
@@ -1172,6 +1515,7 @@ function viewHTML() {
     case 'notes': return notesView();
     case 'project': return ui.projectId && db.projects[ui.projectId] && !db.projects[ui.projectId].deleted ? projectView(db.projects[ui.projectId]) : homeView();
     case 'review': return reviewView();
+    case 'shared': return sharedView();
     default: return homeView();
   }
 }
@@ -2016,7 +2360,7 @@ function areaView(a) {
 }
 function projectView(p) {
   const s = projStats(p);
-  const ts = tasks().filter(t => t.projectId === p.id);
+  const ts = allTasks().filter(t => t.projectId === p.id);
   const a = areaOf(p.areaId);
   const name = p.name.toLowerCase();
   const linked = unionEvents().filter(e => e.title.toLowerCase().includes(name) && evDays(e).slice(-1)[0] >= today()).slice(0, 5);
@@ -2031,7 +2375,7 @@ function projectView(p) {
       ${addForm('stage', st ? 'Add task to ' + st.name : 'Add task', { id: 'add-' + (st ? st.id : 'none'), data: `data-sid="${st ? esc(st.id) : ''}"` })}</div>`;
   };
   return `<div class="pview">
-    <div class="hdr" style="margin-bottom:8px"><button class="pill" data-act="nav" data-v="${a ? a.id : 'home'}" style="display:inline-flex;align-items:center;gap:6px;padding-left:8px">${I.l}${a ? adot(a) + esc(a.name) : 'Home'}</button><button class="ib" data-act="del-project" aria-label="Delete project">${I.trash}</button></div>
+    <div class="hdr" style="margin-bottom:8px">${p.sh && shRole(p.sh) !== 'owner' ? `<button class="pill" data-act="nav" data-v="shared" style="display:inline-flex;align-items:center;gap:6px;padding-left:8px">${I.l}Shared</button>` : `<button class="pill" data-act="nav" data-v="${a ? a.id : 'home'}" style="display:inline-flex;align-items:center;gap:6px;padding-left:8px">${I.l}${a ? adot(a) + esc(a.name) : 'Home'}</button>`}<span class="phbtns">${p.sh ? `<button class="avs" data-act="proj-share" aria-label="People">${shMembers(p.sh).slice(0, 5).map(m => avatar(p.sh, m.email)).join('')}${shMembers(p.sh).length > 5 ? `<span class="av more">+${shMembers(p.sh).length - 5}</span>` : ''}</button>` : ''}<button class="ib" data-act="proj-pdf" aria-label="Export PDF" title="Export PDF">${I.pdf}</button><button class="ib" data-act="proj-share" aria-label="Share project" title="Share">${I.people}</button><button class="ib" data-act="del-project" aria-label="${p.sh && shRole(p.sh) !== 'owner' ? 'Leave project' : 'Delete project'}">${I.trash}</button></span></div>
     <div class="ptitle"><button class="pchk ${p.done ? 'on' : ''}" data-act="proj-done" aria-pressed="${!!p.done}" aria-label="${p.done ? 'Mark project not done' : 'Mark project done'}">${p.done ? I.check : ''}</button><input id="proj-name" class="title-in" style="font-size:28px" dir="auto" value="${esc(p.name)}" aria-label="Project name"></div>
     ${p.done ? `<div class="pdone-note">${I.check} Completed ${esc(fmtDay(isoDay(p.doneAt || new Date().toISOString())))}</div>` : s.total && s.done === s.total ? `<button class="pdone-cta" data-act="proj-done">All ${s.total} tasks are done. Mark the project as completed</button>` : ''}
     <textarea id="proj-brief" class="pbrief" rows="1" dir="auto" placeholder="Add a brief — the one thing to remember about this project" aria-label="Project brief">${esc(p.brief || '')}</textarea>
@@ -2039,8 +2383,8 @@ function projectView(p) {
     <div style="display:flex;align-items:center;gap:10px;margin:10px 0 12px;flex-wrap:wrap;font-size:13px" class="mut">
       <span>${s.done} of ${s.total} done</span><span>·</span>
       <label style="display:flex;align-items:center;gap:6px">Deadline <input type="date" id="proj-deadline" value="${esc(p.deadline || '')}" style="background:transparent;border:0;color:var(--tx);color-scheme:dark;font-size:13px"></label>
-      <span>·</span>
-      <label style="display:flex;align-items:center;gap:6px">Section <select id="proj-area" class="mini-sel"><option value="">None</option>${AREAS.map(x => `<option value="${x.id}" ${p.areaId === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
+      ${p.sh && shRole(p.sh) !== 'owner' ? `<span>·</span><span>Shared by ${esc(shName(p.sh, SH[p.sh].data && SH[p.sh].data.owner))}</span>` : `<span>·</span>
+      <label style="display:flex;align-items:center;gap:6px">Section <select id="proj-area" class="mini-sel"><option value="">None</option>${AREAS.map(x => `<option value="${x.id}" ${p.areaId === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>`}
     </div>
     <div class="prog"><i style="width:${s.pct}%"></i></div>
     ${sec('Timeline', timelineHTML(p, ts))}
@@ -2183,7 +2527,7 @@ function reviewView() {
       <div style="display:flex;justify-content:space-between;gap:10px;font-size:14px"><span dir="auto">${esc(p.name)}</span><span class="mut">${s.pct}% · ${s.done}/${s.total}</span></div>
       <div class="prog" style="margin:10px 0"><i style="width:${s.pct}%"></i></div>
       <div class="mut" style="font-size:12px">${p.deadline ? `Deadline ${esc(shortDay(p.deadline))} · ${diffD(today(), p.deadline) >= 0 ? diffD(today(), p.deadline) + ' days left' : '<span class="or">passed</span>'}` : 'No deadline'}</div>
-      ${(p.stages || []).map(st => { const ts = tasks().filter(t => t.projectId === p.id && t.stageId === st.id); const d = ts.filter(t => t.done).length; const pc = ts.length ? Math.round(d / ts.length * 100) : 0; return `<div style="margin-top:12px"><div style="display:flex;justify-content:space-between;font-size:13px;gap:8px"><span dir="auto">${esc(st.name)}</span><span class="mut">${d}/${ts.length}${st.due ? ' · ' + esc(shortDay(st.due)) : ''}</span></div><div class="prog" style="margin-top:6px;height:4px"><i style="width:${pc}%"></i></div></div>`; }).join('')}
+      ${(p.stages || []).map(st => { const ts = allTasks().filter(t => t.projectId === p.id && t.stageId === st.id); const d = ts.filter(t => t.done).length; const pc = ts.length ? Math.round(d / ts.length * 100) : 0; return `<div style="margin-top:12px"><div style="display:flex;justify-content:space-between;font-size:13px;gap:8px"><span dir="auto">${esc(st.name)}</span><span class="mut">${d}/${ts.length}${st.due ? ' · ' + esc(shortDay(st.due)) : ''}</span></div><div class="prog" style="margin-top:6px;height:4px"><i style="width:${pc}%"></i></div></div>`; }).join('')}
       <button class="btn full" style="margin-top:14px" data-act="open-project" data-id="${esc(p.id)}">Open project</button></div>`);
   } else if (sc.fA) {
     const ps = areaProjects(sc.fA);
@@ -2356,6 +2700,8 @@ function renderSheet() {
   if (s.type === 'task') { const t = db.tasks[s.id]; if (!t || t.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = taskSheet(t); }
   else if (s.type === 'event') inner = eventSheet(s);
   else if (s.type === 'settings') inner = settingsSheet();
+  else if (s.type === 'share') inner = shareSheet();
+  else if (s.type === 'join') inner = joinSheet();
   else if (s.type === 'note') { const n = db.notes[s.id]; if (!n || n.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = noteSheet(n); }
   else if (s.type === 'image') inner = imageSheet(s);
   else if (s.type === 'list') { const l = db.lists[s.id]; if (!l || l.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = listSheet(l); }
@@ -2368,7 +2714,7 @@ function renderSheet() {
 function autoGrow() { document.querySelectorAll('textarea.title-in').forEach(el => { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }); }
 function taskSheet(t) {
   const ta = taskArea(t);
-  const ps = ta ? areaProjects(ta) : projects(); const p = t.projectId && db.projects[t.projectId];
+  const ps = t.sh ? [db.projects[t.projectId]].filter(Boolean) : (ta ? areaProjects(ta) : projects()).filter(x => !x.sh); const p = t.projectId && db.projects[t.projectId];
   const stages = p ? p.stages || [] : [];
   const crumb = [areaOf(ta) ? areaOf(ta).name : '', projName(t.projectId), t.stageId ? stageName(t.projectId, t.stageId) : ''].filter(Boolean).join(' › ') || (t.repeat ? 'Repeating' : 'Task');
   const opt = (v, l, cur) => `<option value="${esc(v)}" ${String(cur ?? '') === String(v) ? 'selected' : ''}>${esc(l)}</option>`;
@@ -2385,7 +2731,9 @@ function taskSheet(t) {
     <div class="field"><span class="lb">Urgent</span><button class="sw ${t.urgent ? 'on' : ''}" data-act="sw-urgent" role="switch" aria-checked="${!!t.urgent}" aria-label="Urgent"></button></div>
     <div class="field"><label for="t-repeat">Repeat</label><select id="t-repeat">${opt('', 'Never', t.repeat ? t.repeat.freq : '')}${opt('daily', 'Every day', t.repeat && t.repeat.freq)}${opt('weekly', 'Every week', t.repeat && t.repeat.freq)}${opt('monthly', 'Every month', t.repeat && t.repeat.freq)}${opt('yearly', 'Every year', t.repeat && t.repeat.freq)}</select></div>
     <div class="field"><label for="t-area">Section</label><select id="t-area">${opt('', 'None', ta || '')}${AREAS.map(a => opt(a.id, a.name, ta)).join('')}</select></div>
-    <div class="field"><label for="t-project">Project</label><select id="t-project">${opt('', 'None', t.projectId || '')}${ps.map(x => opt(x.id, x.name, t.projectId)).join('')}</select></div>
+    <div class="field"><label for="t-project">Project</label><select id="t-project" ${t.sh ? 'disabled' : ''}>${t.sh ? '' : opt('', 'None', t.projectId || '')}${ps.map(x => opt(x.id, x.name, t.projectId)).join('')}</select></div>
+    ${t.sh ? `<div class="field"><label for="t-assignee">Assigned to</label><select id="t-assignee">${opt('', 'Nobody', t.assignee || '')}${shMembers(t.sh).filter(m => m.role !== 'reader').map(m => opt(m.email, m.email === me() ? 'Me' : (m.name || m.email.split('@')[0]), t.assignee || '')).join('')}</select></div>
+    <div class="field"><span class="lb">Added by</span><span style="font-size:14px">${esc(shName(t.sh, t.by) || '—')}</span></div>` : ''}
     ${stages.length ? `<div class="field"><label for="t-stage">Stage</label><select id="t-stage">${opt('', '—', t.stageId || '')}${stages.map(x => opt(x.id, x.name, t.stageId)).join('')}</select></div>` : ''}
   </div>
   <div class="quick">${[['Today', today()], ['Tomorrow', addD(today(), 1)], ['Next week', addD(today(), 7)]].map(([l, v]) => `<button class="chip" data-act="due-quick" data-v="${v}">${l}</button>`).join('')}${t.due ? '<button class="chip" data-act="due-quick" data-v="">No date</button>' : ''}</div>
@@ -2490,6 +2838,19 @@ document.addEventListener('click', e => {
     case 'connect-first': connect(true); break;
     case 'connect': connect(false); break;
     case 'nav': go(el.dataset.v); break;
+    case 'proj-pdf': { const p = db.projects[ui.projectId]; if (p) exportProjectPdf(p); break; }
+    case 'proj-share': if (db.projects[ui.projectId]) openSheet({ type: 'share' }); break;
+    case 'sh-start': { const p = db.projects[ui.projectId]; if (!p) break; if (!authed()) { toast('Connect Google first'); break; }
+      el.disabled = true; el.textContent = 'Sharing…';
+      shCreate(p).then(r => { ui.projectId = r.project.id; LS.set('projectId', r.project.id); renderMain(); renderSheet(); toast('Shared — now add people'); })
+        .catch(e => { console.error(e); toast('Couldn’t share — check your connection'); renderSheet(); }); break; }
+    case 'sh-rm': { const p = db.projects[ui.projectId]; if (p && p.sh && confirm(`Remove ${el.dataset.email}? They lose access to this project.`)) shRemoveMember(p.sh, el.dataset.email).then(() => { renderSheet(); renderMain(); }).catch(() => toast('Couldn’t remove — try again')); break; }
+    case 'sh-copy': { const p = db.projects[ui.projectId]; if (p && p.sh) copyText(`${JOIN_BASE}?join=${p.sh}`).then(ok => toast(ok ? 'Link copied' : 'Copy failed')); break; }
+    case 'sh-send': { const p = db.projects[ui.projectId]; if (!p || !p.sh) break; const text = `Join “${p.name}” in Ctrl Z: ${JOIN_BASE}?join=${p.sh}`;
+      if (NATIVE && ZeroNative.shareText) { try { ZeroNative.shareText(p.name, text); break; } catch { } }
+      if (navigator.share) navigator.share({ title: p.name, text }).catch(() => { }); else copyText(text).then(ok => toast(ok ? 'Invite copied' : 'Copy failed')); break; }
+    case 'sh-leave': { const p = db.projects[ui.projectId]; if (p && p.sh && confirm(`Leave “${p.name}”?`)) { const f = p.sh; closeSheetQuiet(); shLeave(f); go('shared'); } break; }
+    case 'sh-pick': pickShared(ui.joinFid); break;
     case 'tfilter': ui.tFilter = el.dataset.v; renderMain(); break;
     case 'new-note': { const n = newNote(''); openNote(n.id); break; }
     case 'open-note': if (db.notes[el.dataset.id]) openNote(el.dataset.id); break;
@@ -2521,7 +2882,13 @@ document.addEventListener('click', e => {
     case 'open-project': closeSheetQuiet(); openProject(el.dataset.id); break;
     case 'add-stage': { const p = db.projects[ui.projectId]; if (p) { const st = { id: uid(), name: 'New stage', due: null }; upd(p, { stages: [...(p.stages || []), st] }); renderMain(); setTimeout(() => { const i = document.getElementById('st-' + st.id); if (i) { i.focus(); i.select(); } }, 30); } break; }
     case 'del-stage': { const p = db.projects[ui.projectId]; if (p && confirm('Delete this stage? Its tasks stay in the project.')) { tasks().filter(x => x.stageId === el.dataset.sid).forEach(x => upd(x, { stageId: null })); upd(p, { stages: p.stages.filter(s => s.id !== el.dataset.sid) }); renderMain(); } break; }
-    case 'del-project': { const p = db.projects[ui.projectId]; if (p && confirm(`Delete project “${p.name}”? Its tasks are kept without a project.`)) { tasks().filter(x => x.projectId === p.id).forEach(x => upd(x, { projectId: null, stageId: null, areaId: x.areaId || p.areaId || null })); upd(p, { deleted: true }); go(p.areaId || 'home'); } break; }
+    case 'del-project': { const p = db.projects[ui.projectId];
+      if (p && p.sh) {
+        if (shRole(p.sh) === 'owner') { if (confirm(`Delete shared project “${p.name}” for everyone?`)) { upd(p, { deleted: true }); shSyncAll(); go('home'); } }
+        else if (confirm(`Leave “${p.name}”? It disappears from your app; the others keep it.`)) { shLeave(p.sh); go('shared'); }
+        break;
+      }
+      if (p && confirm(`Delete project “${p.name}”? Its tasks are kept without a project.`)) { tasks().filter(x => x.projectId === p.id).forEach(x => upd(x, { projectId: null, stageId: null, areaId: x.areaId || p.areaId || null })); upd(p, { deleted: true }); go(p.areaId || 'home'); } break; }
     case 'range': ui.rDays = +el.dataset.n; if (ui.rDays === 0 && !ui.rFrom) { const [f, to] = [addD(today(), -13), today()]; ui.rFrom = f; ui.rTo = to; } renderMain(); break;
     case 'copy-md': { const [f, to] = reviewRange(); copyText(buildMarkdown(reviewData(f, to))).then(ok => toast(ok ? 'Copied — paste it in a chat with Claude' : 'Copy failed')); break; }
     case 'save-md': saveReviewToDrive(); break;
@@ -2550,7 +2917,7 @@ document.addEventListener('click', e => {
     case 'proj-done': {
       const p = db.projects[ui.projectId]; if (!p) break;
       if (p.done) { upd(p, { done: false, doneAt: null }); renderMain(); break; }
-      const left = tasks().filter(x => x.projectId === p.id && !x.done).length;
+      const left = allTasks().filter(x => x.projectId === p.id && !x.done).length;
       if (left && !confirm(`${left} ${left === 1 ? 'task is' : 'tasks are'} still open in this project. Mark it completed anyway?`)) break;
       upd(p, { done: true, doneAt: new Date().toISOString() }); toast('Project completed'); renderMain(); break;
     }
@@ -2637,6 +3004,15 @@ document.addEventListener('submit', e => {
   const input = f.querySelector('input'); const v = (input.value || '').trim(); const kind = f.dataset.form; const t = curTask();
   const refocus = id => setTimeout(() => { const i = document.getElementById(id); if (i) i.focus(); }, 20);
   if (kind === 'qa') { submitQA(input); return; }
+  if (kind === 'sh-add') {
+    const p = db.projects[ui.projectId]; const em = (f.querySelector('#sh-email').value || '').trim(); const nm = f.querySelector('#sh-name').value; const rl = f.querySelector('#sh-role').value;
+    if (!p || !p.sh || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) { toast('Type their Gmail address'); return; }
+    const b = f.querySelector('button[type=submit]'); if (b) { b.disabled = true; b.textContent = 'Adding…'; }
+    shAddMember(p.sh, em, nm, rl).then(() => { toast('Invite sent to ' + em); renderSheet(); renderMain(); })
+      .catch(e => { console.error(e); toast(/invalid|notFound|400/.test(String(e.message)) ? 'Google couldn’t find that account — check the address' : 'Couldn’t add — try again'); renderSheet(); });
+    return;
+  }
+  if (kind === 'sh-join') { const v2 = (input.value || '').trim(); if (v2) { input.value = ''; shJoin(v2); } return; }
   if (!v) { input.focus(); return; }
   if (kind === 'sub' && t) { upd(t, { subtasks: [...(t.subtasks || []), { id: uid(), title: v, done: false }] }); renderSheet(); renderMain(); refocus('s-new'); }
   else if (kind === 'link' && t) { const url = /^https?:\/\//i.test(v) ? v : 'https://' + v; upd(t, { links: [...(t.links || []), url] }); renderSheet(); }
@@ -2705,6 +3081,7 @@ document.addEventListener('change', e => {
       const f = el.value; upd(t, { repeat: f ? { freq: f, interval: 1, day: f === 'monthly' ? pd(t.due || today()).getDate() : undefined } : null, due: t.due || (f ? today() : null) });
       renderSheet(); renderMain(); return;
     }
+    if (el.id === 't-assignee') { upd(t, { assignee: el.value || null }); renderSheet(); renderMain(); return; }
     if (el.id === 't-project') { const np = el.value ? db.projects[el.value] : null; upd(t, { projectId: el.value || null, stageId: null, areaId: np && np.areaId ? np.areaId : taskArea(t) }); renderSheet(); renderMain(); return; }
     if (el.id === 't-area') { const keepP = t.projectId && db.projects[t.projectId] && db.projects[t.projectId].areaId === (el.value || null); upd(t, { areaId: el.value || null, projectId: keepP ? t.projectId : null, stageId: keepP ? t.stageId : null }); renderSheet(); renderMain(); return; }
     if (el.id === 't-img') { const files = [...(el.files || [])]; el.value = ''; if (files.length) { toast('Adding image…'); addImages(t, files); } return; }
@@ -2728,7 +3105,7 @@ document.addEventListener('change', e => {
   const p = ui.projectId && db.projects[ui.projectId];
   if (p) {
     if (el.id === 'proj-deadline') { upd(p, { deadline: el.value || null }); renderMain(); return; }
-    if (el.id === 'proj-area') { upd(p, { areaId: el.value || null }); tasks().filter(x => x.projectId === p.id).forEach(x => upd(x, { areaId: el.value || null })); renderMain(); toast(el.value ? 'Moved to ' + areaOf(el.value).name : 'Removed from section'); return; }
+    if (el.id === 'proj-area') { upd(p, { areaId: el.value || null }); allTasks().filter(x => x.projectId === p.id).forEach(x => upd(x, { areaId: el.value || null })); renderMain(); toast(el.value ? 'Moved to ' + areaOf(el.value).name : 'Removed from section'); return; }
     if (el.id === 'proj-name' || el.dataset.stage) { save(); renderMain(); return; }
     if (el.dataset.stageDue) { upd(p, { stages: p.stages.map(s => s.id === el.dataset.stageDue ? { ...s, due: el.value || null } : s) }); renderMain(); return; }
     if (el.dataset.stageStart) { upd(p, { stages: p.stages.map(s => s.id === el.dataset.stageStart ? { ...s, start: el.value || null } : s) }); renderMain(); return; }
@@ -2766,6 +3143,7 @@ document.addEventListener('drop', e => { const col = e.target.closest && e.targe
 function handleLaunch() {
   const q = new URLSearchParams(location.search);
   if (![...q.keys()].length) return;
+  if (q.get('join')) LS.set('pendingJoin', q.get('join'));
   history.replaceState(null, '', location.pathname);
   if (!LS.get('signedIn', false)) return;
   const v = q.get('v'), a = q.get('a'), t = q.get('t'), d = q.get('d');
@@ -2781,6 +3159,8 @@ function handleLaunch() {
   else if (a === 'add') setTimeout(() => { const i = window.innerWidth >= 900 ? ($('#qa-d') || $('#qa-h')) : $('#qa-m'); if (i) i.focus(); }, 150);
 }
 
+for (const f of shIds()) { if (SH[f].left) delete SH[f]; else shInject(f); }
+setInterval(() => { if (document.visibilityState === 'visible' && authed() && shIds().length) shSyncAll(); }, 45e3);
 renderMain(); renderSheet();
 window.__zeroInkPull();
 handleLaunch();
