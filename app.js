@@ -811,7 +811,25 @@ function shRole(fid) {
   const d = SH[fid] && SH[fid].data; if (!d) return 'writer';
   if ((d.owner || '').toLowerCase() === me()) return 'owner';
   const m = d.members && d.members[me()];
-  return m && !m.removed ? (m.role === 'reader' ? 'reader' : 'writer') : 'writer';
+  if (m && !m.removed) return m.role === 'reader' ? 'reader' : 'writer';
+  if (d.link && d.link.role) return d.link.role === 'reader' ? 'reader' : 'writer'; /* came in through the open link */
+  return 'writer';
+}
+/* "anyone with the link": Google Drive permission of type anyone (not searchable) */
+async function shSetLink(fid, role) {
+  const s = SH[fid]; if (!s || !s.data) return;
+  const cur = s.data.link || {};
+  if (cur.pid) { try { await gfetch(`${DRV}/files/${encodeURIComponent(fid)}/permissions/${encodeURIComponent(cur.pid)}`, { method: 'DELETE' }); } catch (e) { if (e.status !== 404) throw e; } }
+  let pid = null;
+  if (role) {
+    const r = await gfetch(`${DRV}/files/${encodeURIComponent(fid)}/permissions?fields=id`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'anyone', role: role === 'reader' ? 'reader' : 'writer', allowFileDiscovery: false }) });
+    pid = (await r.json()).id || null;
+  }
+  s.data.link = { role: role || null, pid, updatedAt: now() };
+  shPersist();
+  /* write the new link setting straight away (the merge below keeps it) */
+  await gfetch(`${UPL}/files/${encodeURIComponent(fid)}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...s.data, updatedAt: now() }) });
+  await shSyncOne(fid);
 }
 const shCanEdit = fid => shRole(fid) !== 'reader';
 function shMembers(fid) {
@@ -876,8 +894,10 @@ async function shSyncOne(fid) {
     ...remote,
     project: newer(remote.project, loc.project),
     tasks: mergeMap(remote.tasks, loc.tasks),
-    members: mergeMap(remote.members, (s.data && s.data.members) || {})
+    members: mergeMap(remote.members, (s.data && s.data.members) || {}),
+    link: newer(remote.link, s.data && s.data.link) || null
   };
+  if (!merged.link) delete merged.link;
   const changed = JSON.stringify(merged) !== JSON.stringify(remote);
   s.data = merged; shInject(fid);
   if (changed) {
@@ -962,6 +982,10 @@ async function shJoin(fid) {
     const d = await (await gfetch(`${DRV}/files/${encodeURIComponent(fid)}?alt=media`)).json();
     if (!d || d.kind !== 'ctrlz-shared') { toast('That link isn’t a Ctrl Z project'); return; }
     SH[fid] = { fileId: fid, data: d, at: now() }; shPersist(); addSharedPref(fid); shInject(fid, true);
+    if (!(d.members || {})[me()] && shRole(fid) === 'writer' && me()) {
+      d.members = { ...(d.members || {}), [me()]: { email: me(), name: '', role: 'writer', viaLink: true, updatedAt: now() } };
+      shSyncOne(fid).catch(() => { });
+    }
     toast('Joined “' + d.project.name + '”'); openProject(d.project.id);
   } catch (e) {
     if (e.status === 404 || e.status === 403) { ui.joinFid = fid; openSheet({ type: 'join' }); return; }
@@ -1013,9 +1037,10 @@ function shareSheet() {
       <div class="field"><label for="sh-role">Can</label><select id="sh-role" name="role"><option value="writer">Edit</option><option value="reader">View only</option></select></div>
       <button class="btn pri full" type="submit" style="margin-top:6px">Add and send invite</button></form>
       <p class="mut" style="font-size:12px;margin:8px 2px 0;line-height:1.6">Google emails them the invite. They open the link, sign in with that Gmail, and the project appears in their app.</p>`) : ''}
+  ${owner ? sec('Link access', `<div class="lacc" role="radiogroup" aria-label="Who can open the link">${[['', 'Only people added', 'The link works only for the people above'], ['reader', 'Anyone with the link · View', 'Anyone who opens it with a Google account can see the project'], ['writer', 'Anyone with the link · Edit', 'Anyone who opens it can add and tick tasks']].map(([v, l, d]) => `<button class="lopt ${((SH[fid].data.link || {}).role || '') === v ? 'on' : ''}" data-act="sh-link" data-v="${v}" role="radio" aria-checked="${((SH[fid].data.link || {}).role || '') === v}"><span class="dot"></span><span><b>${l}</b><em>${d}</em></span></button>`).join('')}</div>`) : ''}
   ${sec('Invite link', `<div class="card" style="padding:12px 14px"><div class="mut" style="font-size:12px;word-break:break-all;direction:ltr">${esc(link)}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px"><button class="btn" data-act="sh-copy">Copy link</button><button class="btn" data-act="sh-send">Send…</button></div></div>
-    <p class="mut" style="font-size:12px;margin:8px 2px 0">Only people added above can open it.</p>`)}
+    <p class="mut" style="font-size:12px;margin:8px 2px 0">${(SH[fid].data.link || {}).role ? 'Anyone you send it to can open it. Switch Link access back to “Only people added” to stop it.' : 'Only people added above can open it.'}</p>`)}
   ${owner ? '' : `<button class="btn full" style="margin-top:18px" data-act="sh-leave">Leave this project</button>`}`;
 }
 function sharedView() {
@@ -2851,6 +2876,11 @@ document.addEventListener('click', e => {
       if (navigator.share) navigator.share({ title: p.name, text }).catch(() => { }); else copyText(text).then(ok => toast(ok ? 'Invite copied' : 'Copy failed')); break; }
     case 'sh-leave': { const p = db.projects[ui.projectId]; if (p && p.sh && confirm(`Leave “${p.name}”?`)) { const f = p.sh; closeSheetQuiet(); shLeave(f); go('shared'); } break; }
     case 'sh-pick': pickShared(ui.joinFid); break;
+    case 'sh-link': { const p = db.projects[ui.projectId]; if (!p || !p.sh) break; const v = el.dataset.v || null;
+      if (((SH[p.sh].data.link || {}).role || null) === v) break;
+      if (v === 'writer' && !confirm('Anyone who gets this link will be able to edit the project. Continue?')) break;
+      document.querySelectorAll('.lopt').forEach(b => b.disabled = true);
+      shSetLink(p.sh, v).then(() => { toast(v ? 'Link is open' : 'Link closed'); renderSheet(); }).catch(e => { console.error(e); toast('Couldn’t change the link — try again'); renderSheet(); }); break; }
     case 'tfilter': ui.tFilter = el.dataset.v; renderMain(); break;
     case 'new-note': { const n = newNote(''); openNote(n.id); break; }
     case 'open-note': if (db.notes[el.dataset.id]) openNote(el.dataset.id); break;

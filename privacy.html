@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ctrl Z · Privacy</title>
+<style>
+  :root{--bg:#1D202C;--tx:#ECE6DE;--mut:#8C9DA3;--accent:#C29B78}
+  html,body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.7 -apple-system,"Segoe UI",Roboto,"Noto Sans","Noto Sans Arabic",Tahoma,sans-serif}
+  main{max-width:720px;margin:0 auto;padding:40px 16px 64px}
+  h1{font-size:30px;margin:0 0 6px}
+  h2{font-size:18px;margin:30px 0 6px;color:var(--accent)}
+  p,li{color:#d6d9dc}
+  .mut{color:var(--mut);font-size:14px}
+  a{color:var(--accent)}
+  [dir=rtl]{font-size:16px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Ctrl Z — Privacy</h1>
+  <p class="mut">Last updated 12 November 2026</p>
+
+  <p>Ctrl Z (Zerodocs control) is a personal planner. It has no servers of its own and no analytics or advertising. Everything it stores lives in your own Google account.</p>
+
+  <h2>What the app uses, and why</h2>
+  <ul>
+    <li><b>Google Drive — only files the app creates or that you open with it</b> (<code>drive.file</code>): your tasks, projects, notes, images and voice notes are saved in a folder named “Zero” in your Drive. Shared projects are files in the owner’s Drive, shared through Google Drive with the people the owner chooses.</li>
+    <li><b>Google Calendar</b> (<code>calendar.events</code>, <code>calendar.calendarlist.readonly</code>): to show your events and to create or edit events when you ask it to.</li>
+    <li><b>Google Tasks</b> (<code>tasks</code>): to keep your tasks in sync with your “My Tasks” list, if you leave that option on.</li>
+    <li><b>Your email address</b>: to show which account is signed in and who did what in a shared project.</li>
+  </ul>
+
+  <h2>Where the data goes</h2>
+  <p>The app runs in your browser or on your device and talks directly to Google. Nothing is sent to the app’s author or to anyone else. In a shared project, the people it is shared with can see that project, its tasks and the names or email addresses of its members — nothing else from your account.</p>
+
+  <h2>Your control</h2>
+  <ul>
+    <li>Sign out at any time from Settings. Your data stays in your Drive.</li>
+    <li>Delete the “Zero” folder in Google Drive to remove everything the app saved.</li>
+    <li>Remove the app’s access at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>.</li>
+  </ul>
+
+  <h2>Contact</h2>
+  <p>Questions: <a href="https://github.com/9effrr/zero">github.com/9effrr/zero</a>.</p>
+
+  <div dir="rtl" lang="ar">
+    <h2>بالعربية باختصار</h2>
+    <p>تطبيق Ctrl Z ليس له خوادم خاصة ولا يجمع أي بيانات. كل ما يحفظه يبقى في حسابك على Google: مهامك وملاحظاتك في مجلد «Zero» على Drive، ومواعيدك في تقويمك، ومهامك في Google Tasks إن أردت. المشاريع المشتركة تُشارك فقط مع من يختاره صاحب المشروع. تستطيع حذف كل شيء بحذف مجلد «Zero»، وإلغاء صلاحية التطبيق من إعدادات حسابك في Google.</p>
+  </div>
+</main>
+</body>
+</html>
