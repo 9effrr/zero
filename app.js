@@ -1045,9 +1045,10 @@ function shareSheet() {
 }
 function sharedView() {
   const ps = shIds().map(shProject).filter(p => p && !p.deleted);
-  return `<div class="hdr"><h1>Shared</h1></div>
-  ${ps.length ? `<div class="plist">${ps.map(pcardHTML).join('')}</div>` : `<p class="mut" style="font-size:14px;line-height:1.7">Projects other people share with you appear here.</p>`}
-  ${sec('Join with a link', `<form class="inline-add" data-form="sh-join" autocomplete="off">${I.plusS}<input id="sh-join" name="v" dir="ltr" placeholder="Paste the invite link" enterkeyhint="go"><button class="go-s" type="submit">Open</button></form>`)}`;
+  return `<div class="narrow">${topbar(backBtn('sections', 'Sections'))}
+  <header class="pagehead"><h1 class="serif-h">Shared</h1><div class="sum">Projects you share with other people, or they share with you</div></header>
+  ${ps.length ? `<div class="plist">${ps.map(pcardHTML).join('')}</div>` : `<p class="hint">Projects other people share with you appear here.</p>`}
+  ${sec('Join with a link', `<form class="inline-add" data-form="sh-join" autocomplete="off">${I.plusS}<input id="sh-join" name="v" dir="ltr" placeholder="Paste the invite link" enterkeyhint="go"><button class="go-s" type="submit">Open</button></form>`)}</div>`;
 }
 
 /* ---------------- project PDF (brief + to-do list, white, for printing) ---------------- */
@@ -1350,7 +1351,7 @@ function quickAdd(text, ctx = {}) {
 }
 
 /* ---------------- UI state ---------------- */
-const VIEWS = ['home', 'notes', ...AREAS.map(a => a.id), 'shared', 'review', 'project'];
+const VIEWS = ['home', 'sections', 'notes', ...AREAS.map(a => a.id), 'shared', 'review', 'project'];
 const TABS = [['home', 'Home'], ['notes', 'Notes'], ...AREAS.map(a => [a.id, a.name]), ['review', 'Review']];
 const hasShared = () => shIds().some(f => { const p = shProject(f); return p && !p.deleted && shRole(f) !== 'owner'; }) || shIds().length > 0;
 const tabsNow = () => hasShared() ? [...TABS.slice(0, -1), ['shared', 'Shared'], TABS[TABS.length - 1]] : TABS;
@@ -1408,7 +1409,7 @@ function taskMeta(t, o = {}) {
   else if (!o.hideDue && t.due) {
     const lbl = esc(relDay(t.due) + (t.time ? ' ' + t.time : ''));
     m.push(isOverdue(t) ? `<span class="or">${t.due < today() ? 'Overdue · ' : ''}${lbl}</span>` : (t.urgent && !t.done ? `<span class="or">${lbl}</span>` : lbl));
-  } else if (t.time) m.push(esc(t.time));
+  } else if (t.time && !o.noTime) m.push(esc(t.time));
   if (t.sh && t.assignee) m.push(`<span class="who">${avatar(t.sh, t.assignee, 'sm')}${esc(shName(t.sh, t.assignee))}</span>`);
   if (t.sh && t.done && t.doneBy && t.doneBy !== me()) m.push(`<span class="who">✓ ${esc(shName(t.sh, t.doneBy))}</span>`);
   return m.join(' · ');
@@ -1446,42 +1447,129 @@ function projStats(p) {
 }
 function pcardHTML(p) {
   const s = projStats(p); const a = areaOf(p.areaId);
-  const pr = p.done ? 0 : (p.priority || 0);
-  return `<button class="card pcard ${p.done ? 'pdone' : ''} prio-${pr}" data-act="open-project" data-id="${esc(p.id)}" style="${a ? '--ac:' + a.color : ''}">${pr ? `<span class="pbadge">${pr === 2 ? 'Top priority' : 'Important'}</span>` : ''}
-    <span style="display:flex;justify-content:space-between;gap:10px;align-items:baseline"><span class="nm" dir="auto">${p.done ? `<span class="pdk">${I.check}</span>` : ''}${esc(p.name)}</span><span class="mut" style="font-size:12px;white-space:nowrap">${p.done ? 'Completed ' + esc(shortDay(isoDay(p.doneAt || new Date().toISOString()))) : p.deadline ? 'Due ' + esc(shortDay(p.deadline)) : ''}</span></span>
+  const pr = p.priority || 0;
+  const st = (p.stages || []).find(x => x.start && x.due && x.start <= today() && x.due >= today()) || (p.stages || []).find(x => x.due && x.due >= today());
+  const foot = p.done ? `${I.check} Completed` : st ? `<span dir="auto">${esc(st.name)}</span> · until ${esc(shortDay(st.due))}` : p.deadline ? `Due ${esc(shortDay(p.deadline))}` : `${s.total} ${s.total === 1 ? 'task' : 'tasks'}`;
+  return `<button class="pcard prio-${pr} ${p.done ? 'pdone' : ''}" data-act="open-project" data-id="${esc(p.id)}" style="--ac:${a ? a.color : 'var(--s3)'}">
+    ${pr ? `<span class="pbadge">${pr === 2 ? 'Top priority' : 'Important'}</span>` : ''}
+    <span class="nm" dir="auto">${esc(p.name)}</span>
     ${p.brief ? `<span class="pcbrief" dir="auto">${esc(p.brief)}</span>` : ''}
-    ${p.sh ? `<span class="pcshared"><span class="avs">${shMembers(p.sh).slice(0, 6).map(m => avatar(p.sh, m.email, 'sm')).join('')}</span><span class="mut">Shared${shRole(p.sh) !== 'owner' && SH[p.sh].data ? ' by ' + esc(shName(p.sh, SH[p.sh].data.owner)) : ''}</span></span>` : ''}
-    <span class="prog"><i style="width:${s.pct}%"></i></span>
-    <span class="mut" style="font-size:12px">${s.done} of ${s.total} done${s.overdue ? ` · <span class="or">${s.overdue} overdue</span>` : ''}${(p.stages || []).length ? ' · ' + p.stages.length + ' stages' : ''}</span></button>`;
+    ${p.sh ? `<span class="pcshared mut"><span class="avs">${shMembers(p.sh).slice(0, 4).map(m => avatar(p.sh, m.email, 'sm')).join('')}</span>${shMembers(p.sh).length} people</span>` : ''}
+    <span class="pft"><span class="pst">${foot}</span><span class="pprog"><span class="mono">${s.done}/${s.total}</span><span class="pbar2"><i style="width:${s.pct}%"></i></span></span></span>
+  </button>`;
 }
 
 /* ---------------- shell ---------------- */
+const I2 = {
+  today: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="16.5" rx="3"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/></svg>',
+  layers: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 8l10 5 10-5-10-5Z"/><path d="m2 13 10 5 10-5"/></svg>',
+  doc: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg>',
+  bars: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 20V11M11 20V5M17 20v-6M21 20H3"/></svg>',
+  search: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
+  plus: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
+  down: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>'
+};
+const SECT_VIEWS = () => ['sections', 'shared', 'project', ...AREAS.map(a => a.id)];
+const wdName = d => fmtDay(d, { weekday: 'long' });
+const monName = d => pd(d).toLocaleDateString('en-GB', { month: 'long' });
+const calColor = e => { const c = (typeof cals !== 'undefined' ? cals : []).find(x => x.id === e.calId); return (c && c.color) || 'var(--blue)'; };
+const sDate = d => fmtDay(d, { weekday: 'short', day: 'numeric' });
+
+function sideHTML() {
+  const cur = curTab();
+  const nav = (v, label, extra = '', lead = '') => `<button class="nav ${cur === v ? 'on' : ''}" data-act="nav" data-v="${v}" ${cur === v ? 'aria-current="page"' : ''}><span class="nl">${lead}<span class="nt">${label}</span></span>${extra}</button>`;
+  const c = n => n ? `<span class="c">${n}</span>` : '';
+  const shared = shIds().map(f => shProject(f)).filter(p => p && !p.deleted && shRole(p.sh) !== 'owner');
+  return `<nav class="side" aria-label="Main">
+    <div class="brand"><img src="logo.png" alt="Zerodocs control" width="58" height="35" class="side-logo"></div>
+    ${nav('home', 'Today', c(openCount()), I2.today)}
+    ${nav('notes', 'Notes', c(notes().length), I2.doc)}
+    ${nav('review', 'Review', '', I2.bars)}
+    <div class="grp">Sections</div>
+    ${AREAS.map(a => nav(a.id, esc(a.name), c(tasks().filter(t => !t.done && taskArea(t) === a.id).length), `<i class="tabsq" style="background:${a.color}"></i>`)).join('')}
+    ${shared.length ? `<div class="grp">Shared with you</div>${shared.slice(0, 6).map(p => `<button class="nav ${ui.view === 'project' && ui.projectId === p.id ? 'on' : ''}" data-act="open-project" data-id="${esc(p.id)}"><span class="nl">${avatar(p.sh, SH[p.sh] && SH[p.sh].data && SH[p.sh].data.owner, 'sm')}<span class="nt" dir="auto">${esc(p.name)}</span></span></button>`).join('')}` : ''}
+    <div class="side-foot">
+      <button class="addb" data-act="add-open">${I2.plus}<span>Add</span><kbd>N</kbd></button>
+      <button class="nav who" data-act="settings"><span class="nl">${syncDot()}<span class="nt">${esc(LS.get('email', '') || 'Not connected')}</span></span>${I.gear}</button>
+    </div>
+  </nav>`;
+}
+
+/* the small bar at the top of every page: a way back on the left, actions on the right */
+function topbar(left = '', right = '') {
+  return `<div class="topbar">${left || '<span></span>'}<span class="tb-r">${right}</span></div>`;
+}
+const backBtn = (v, label, dot = '') => `<button class="crumb" data-act="nav" data-v="${v}">${I.l}${dot}<span>${label}</span></button>`;
+
+function sectionsView() {
+  const td = today();
+  const open = tasks().filter(t => !t.done);
+  const next = aid => open.filter(t => taskArea(t) === aid).sort((a, b) => (isUrgent(b) - isUrgent(a)) || byDue(a, b))[0];
+  const when = t => !t.due ? '' : isOverdue(t) ? '<span class="or">Late</span>' : esc(relDay(t.due) + (t.time ? ' ' + t.time : ''));
+  const shared = shIds().map(f => shProject(f)).filter(p => p && !p.deleted && shRole(p.sh) !== 'owner');
+  const loose = areaProjects(null).filter(p => !p.done && !p.sh);
+  return `<div class="narrow">
+    ${topbar('', `<button class="ib" data-act="settings" aria-label="Settings">${I.gear}</button>`)}
+    <header class="pagehead"><h1 class="serif-h">Sections</h1><div class="sum">${open.length} open across ${AREAS.length} sections</div></header>
+    <div class="slist">${AREAS.map(a => { const n = open.filter(t => taskArea(t) === a.id).length; const t = next(a.id); const ps = areaProjects(a.id).filter(p => !p.done).length; return `<button class="srow" data-act="nav" data-v="${a.id}">
+      <span class="sn"><i class="tabsq" style="background:${a.color}"></i>${esc(a.name)}</span><span class="sc">${n}</span>
+      <span class="sx">${t ? `<span>Next</span><span class="st" dir="auto">${esc(t.title)}</span>${when(t) ? `<span>· ${when(t)}</span>` : ''}` : `<span>${ps ? ps + (ps === 1 ? ' project' : ' projects') : 'Nothing open'}</span>`}</span></button>`; }).join('')}</div>
+    ${shared.length ? `<div class="h2" style="margin-top:28px"><h2>Shared with you</h2><span class="mono">${shared.length}</span></div>
+      <div class="slist">${shared.map(p => { const s = projStats(p); return `<button class="srow sm" data-act="open-project" data-id="${esc(p.id)}"><span class="sn">${avatar(p.sh, SH[p.sh] && SH[p.sh].data && SH[p.sh].data.owner)}<span dir="auto">${esc(p.name)}</span></span><span class="sc">${s.total - s.done}</span></button>`; }).join('')}</div>` : ''}
+    ${loose.length ? `<div class="h2" style="margin-top:28px"><h2>Projects without a section</h2></div><div class="plist">${loose.map(pcardHTML).join('')}</div>` : ''}
+    <div class="h2" style="margin-top:28px"><h2>Everything</h2></div>
+    <button class="srow sm" data-act="all-tasks"><span class="sn">All tasks</span><span class="sc">${open.length}</span></button>
+  </div>`;
+}
+
+/* the + button: one place to add a task, an event or a note, in plain words */
+function addSheet() {
+  const s = ui.sheet; const kind = s.kind || 'task';
+  const ctx = qaCtx();
+  const where = ctx.projectId ? projName(ctx.projectId) : ctx.areaId ? areaOf(ctx.areaId).name : '';
+  return `<form class="addsheet" data-form="addq" autocomplete="off">
+    <div class="grab" aria-hidden="true"></div>
+    <div class="kinds" role="group" aria-label="What to add">${[['task', 'Task'], ['event', 'Event'], ['note', 'Note']].map(([k, l]) => `<button type="button" class="${kind === k ? 'on' : ''}" data-act="add-kind" data-k="${k}" aria-pressed="${kind === k}">${l}</button>`).join('')}</div>
+    <textarea id="add-in" class="addin" rows="2" dir="auto" enterkeyhint="done" placeholder="${kind === 'note' ? 'Write a note' : kind === 'event' ? 'Meeting with … tomorrow 4pm' : 'What needs doing? e.g. مونتاج غداً ٤م #zerodocs'}">${esc(s.text || '')}</textarea>
+    <div class="parsed" id="add-prev">${kind === 'note' ? '' : qaPreview((kind === 'event' ? '@' : '') + (s.text || ''))}</div>
+    <div class="addgo"><span class="hint">${kind === 'note' ? 'Saved to Notes' : where ? 'Adds to ' + esc(where) : 'Type a day, a time or #section'}</span><button class="btn pri" type="submit">Add</button></div>
+  </form>`;
+}
+function submitAdd() {
+  const s = ui.sheet; if (!s || s.type !== 'add') return;
+  const el = $('#add-in'); const v = (el ? el.value : s.text || '').trim();
+  if (!v) { if (el) el.focus(); return; }
+  const kind = s.kind || 'task';
+  if (kind === 'event') { const p = parseQuick(v); openEventSheet(null, { title: p.title || v, date: p.due || ui.sel || today(), start: p.time || '09:00' }); return; }
+  closeSheetQuiet();
+  if (kind === 'note') { newNote(v); toast('Note saved'); renderMain(); return; }
+  if (quickAdd(v, qaCtx())) renderMain();
+}
+
+function reviewChart(r) {
+  const weekly = r.days > 45;
+  const slots = [];
+  if (weekly) { let d = r.from; while (d <= r.to) { const e = addD(d, 6); let c = 0; for (let x = d; x <= e && x <= r.to; x = addD(x, 1)) c += r.perDay[x] || 0; slots.push([d, c]); d = addD(d, 7); } }
+  else for (let d = r.from; d <= r.to; d = addD(d, 1)) slots.push([d, r.perDay[d] || 0]);
+  const mx = Math.max(1, ...slots.map(s => s[1]));
+  const every = Math.ceil(slots.length / 14);
+  const td = today();
+  return `<div class="rchart" style="--n:${slots.length}">${[0.5, 1].map(f => `<span class="gl" style="bottom:calc(22px + ${f} * (100% - 22px))"></span>`).join('')}${slots.map(([d, c], i) => `<span title="${esc(shortDay(d))}: ${c}"><i style="height:${c ? Math.max(6, Math.round(c / mx * 100)) : 2}%" class="${d === td || (weekly && td >= d && td <= addD(d, 6)) ? 'now' : ''}"></i><em>${i % every === 0 ? esc(weekly ? shortDay(d) : String(pd(d).getDate())) : ''}</em></span>`).join('')}</div>`;
+}
+
 function welcomeHTML() {
   return `<div class="welcome">
     <img class="brand-logo" src="logo.png" alt="Zerodocs" width="150" height="91">
-    <h1>Zerodocs control</h1>
-    <p>Your calendar, tasks, projects and notes in one quiet place. Everything is stored in your own Google Drive.</p>
+    <h1 class="serif-h">Your days, <em>in order</em></h1>
+    <p>Calendar, tasks, projects and notes in one quiet place. Everything is kept in your own Google Drive.</p>
     <button class="btn pri" data-act="connect-first">Connect Google</button>
-    <p style="font-size:12px">Google will ask to allow Zerodocs control to see and edit your calendar events and the files it creates in your Drive.</p>
+    <p class="fine">Google will ask to let Ctrl Z see and edit your calendar events and the files it creates in your Drive.</p>
   </div>`;
 }
 function openCount(aid) { const td = today(); return tasks().filter(t => !t.done && t.due && t.due <= td && (aid === undefined || taskArea(t) === aid)).length; }
-function curTab() { if (ui.view !== 'project') return ui.view; const p = db.projects[ui.projectId] || {}; return p.sh && shRole(p.sh) !== 'owner' ? 'shared' : (p.areaId || 'home'); }
-function sideHTML() {
-  const cur = curTab();
-  const nav = (v, label, extra = '', dot = '') => `<button class="nav ${cur === v ? 'on' : ''}" data-act="nav" data-v="${v}"><span style="display:flex;align-items:center;gap:9px;min-width:0">${dot}${label}</span>${extra}</button>`;
-  const c = n => n ? `<span class="c">${n}</span>` : '';
-  return `<nav class="side" aria-label="Main">
-    <div class="brand"><img src="logo.png" alt="Zerodocs control" width="66" height="40" class="side-logo"> <button class="ib" data-act="settings" aria-label="Settings">${I.gear}</button></div>
-    ${nav('home', 'Home')}
-    ${nav('notes', 'Notes', c(notes().length))}
-    <div class="grp">SECTIONS</div>
-    ${AREAS.map(a => nav(a.id, esc(a.name), c(openCount(a.id)), adot(a))).join('')}
-    ${hasShared() ? nav('shared', 'Shared', c(shIds().length)) : ''}
-    <div class="grp"></div>
-    ${nav('review', 'Review')}
-    <div class="foot">${syncDot()}<span style="overflow:hidden;text-overflow:ellipsis">${esc(LS.get('email', '') || 'Not connected')}</span></div>
-  </nav>`;
+function curTab() {
+  if (ui.view === 'project') { const p = db.projects[ui.projectId] || {}; return p.sh && shRole(p.sh) !== 'owner' ? 'shared' : (p.areaId || 'sections'); }
+  return ui.view;
 }
 function qaPlaceholder() {
   if (ui.view === 'notes' || ui.view === 'home') return 'Write a quick note…';
@@ -1498,8 +1586,15 @@ function qaHTML(id) {
 }
 function bottomHTML() {
   const cur = curTab();
-  const tab = ([v, l]) => { const a = areaOf(v); return `<button class="${cur === v ? 'on' : ''}" data-act="nav" data-v="${v}" ${cur === v ? 'aria-current="page"' : ''}>${a ? adot(a) : ''}${l}</button>`; };
-  return `<nav class="bottom" aria-label="Main">${qaHTML('qa-m')}<div class="tabs" id="tabs">${tabsNow().map(tab).join('')}</div></nav>`;
+  const inS = SECT_VIEWS().includes(cur) || !!areaOf(cur);
+  const b = (v, label, icon, on) => `<button class="${on ? 'on' : ''}" data-act="nav" data-v="${v}" ${on ? 'aria-current="page"' : ''}>${icon}<span>${label}</span></button>`;
+  return `<nav class="bottom" aria-label="Main">
+    ${b('home', 'Today', I2.today, cur === 'home')}
+    ${b('sections', 'Sections', I2.layers, inS)}
+    <button class="fab" data-act="add-open" aria-label="Add">${I2.plus}</button>
+    ${b('notes', 'Notes', I2.doc, cur === 'notes')}
+    ${b('review', 'Review', I2.bars, cur === 'review')}
+  </nav>`;
 }
 function bannerHTML() {
   if (!navigator.onLine) return `<div class="card" style="padding:10px 14px;margin-bottom:14px;font-size:13px;color:var(--mut)">Offline — your changes are saved on this device and will sync when you're back online.</div>`;
@@ -1513,17 +1608,11 @@ function renderMain() {
   if (!LS.get('signedIn', false)) { app.innerHTML = welcomeHTML(); return; }
   const a = document.activeElement;
   const keep = a && a.id && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && !a.closest('.sheet, .writer') ? { id: a.id, v: a.value, s: a.selectionStart, e: a.selectionEnd } : null;
-  const ot = $('#tabs'); if (ot) tabsScroll = ot.scrollLeft;
-  app.innerHTML = `<div class="shell">${sideHTML()}<main class="main" id="main"><div class="mob-top"><img src="logo.png" alt="Zerodocs control" width="52" height="32" class="mob-logo"><button class="ib" data-act="settings" aria-label="Settings">${I.gear}</button></div>${bannerHTML()}${ui.view === 'home' ? '' : `<div class="qa-top">${qaHTML('qa-d')}</div>`}${viewHTML()}</main>${bottomHTML()}</div>`;
-  const tb = $('#tabs');
-  if (tb) {
-    tb.scrollLeft = tabsScroll;
-    const on = tb.querySelector('.on');
-    if (on && (on.offsetLeft < tb.scrollLeft || on.offsetLeft + on.offsetWidth > tb.scrollLeft + tb.clientWidth)) tb.scrollLeft = on.offsetLeft - (tb.clientWidth - on.offsetWidth) / 2;
-  }
+  app.innerHTML = `<div class="shell">${sideHTML()}<main class="main v-${esc(areaOf(ui.view) ? 'area' : ui.view)}" id="main">${bannerHTML()}${viewHTML()}</main>${bottomHTML()}</div>`;
   if (keep) { const el = document.getElementById(keep.id); if (el) { el.value = keep.v; el.focus(); try { el.setSelectionRange(keep.s, keep.e); } catch { } } }
   if (ui.view === 'notes') drawThumbs();
   document.querySelectorAll('.pbrief').forEach(el => { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; });
+  document.querySelectorAll('#proj-name').forEach(el => { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; });
 }
 /* true while the cursor is in a field of an open sheet or note (including the note's rich text) */
 function typingInSheet() {
@@ -1538,6 +1627,7 @@ function viewHTML() {
   if (areaOf(ui.view)) return areaView(areaOf(ui.view));
   switch (ui.view) {
     case 'notes': return notesView();
+    case 'sections': return sectionsView();
     case 'project': return ui.projectId && db.projects[ui.projectId] && !db.projects[ui.projectId].deleted ? projectView(db.projects[ui.projectId]) : homeView();
     case 'review': return reviewView();
     case 'shared': return sharedView();
@@ -1867,7 +1957,6 @@ function reviewNumbersHTML(r) {
     <div class="skey">${key(B.overdue, 'var(--orange)', 'Overdue')}${key(B.today, 'var(--sand)', 'Today')}${key(B.week, 'var(--blue)', 'Next 7 days')}${key(B.later, 'var(--green)', 'Later')}${key(B.none, 'var(--s3)', 'No date')}</div>`;
   return sec('Rates', rings) + sec('Activity', activity + flow) + sec('Load', load)
     + (split ? sec(r.sc.fP ? 'Done by stage' : r.sc.fA ? 'Done by project' : 'Done by section', split) : '')
-    + sec(weekly ? 'Done per week' : 'Done per day', `<div class="card chartc">${chart}</div>`)
     + `<div class="rgrid">${sec('By weekday', `<div class="card chartc">${wchart}</div>`)}${sec('Open tasks by due date', `<div class="card chartc">${due}</div>`)}</div>`
     + sec('More', extra);
 }
@@ -1914,7 +2003,7 @@ function habitsHTML(areaId) {
 /* ---------------- rich notes ----------------
    Notes keep a small HTML subset: <h1>, <h2>, <p> blocks with <b> (bold) and <span class="l"> (light) inside.
    The tablet's native editor reads and writes exactly the same subset (RichText.kt). n.text stays as plain text. */
-const NOTE_COLORS = [['#0E0F13', 'Black'], ['#1D202C', 'Navy'], ['#18222F', 'Ink'], ['#1A2621', 'Forest'], ['#251E2C', 'Plum'], ['#2A221E', 'Cocoa'], ['#23262C', 'Slate'], ['#29261E', 'Olive']];
+const NOTE_COLORS = [['#0B0B0C', 'Black'], ['#18181A', 'Graphite'], ['#18222F', 'Ink'], ['#1A2621', 'Forest'], ['#251E2C', 'Plum'], ['#2A221E', 'Cocoa'], ['#23262C', 'Slate'], ['#29261E', 'Olive']];
 const noteColor = n => (n && n.color) || NOTE_COLORS[0][0];
 function richParse(html) {
   const t = document.createElement('template'); t.innerHTML = html || '';
@@ -2070,56 +2159,83 @@ function noteToolsHTML(n) {
 
 /* ---------------- views ---------------- */
 function homeView() {
-  const m = ui.month; const first = pd(m + '-01');
-  const { start, end } = gridRange(m);
-  const evs = (evCache[m] || unionEvents()).filter(e => !(db.prefs.hiddenCals || []).includes(e.calId));
-  const idx = buildIndex(start, end, evs);
+  const td = today(), sel = ui.sel;
+  const evAll = unionEvents().filter(e => !(db.prefs.hiddenCals || []).includes(e.calId));
+  const wkStart = addD(sel, -pd(sel).getDay());
+  const idx = buildIndex(addD(wkStart, -7), addD(wkStart, 13), evAll);
+  const it = idx[sel] || { ev: [], tk: [] };
+  const isToday = sel === td;
+  /* what the day holds */
+  const timedEv = it.ev.filter(e => !e.allDay);
+  const allDayEv = it.ev.filter(e => e.allDay);
+  const timedTk = it.tk.filter(x => x.t.time && !x.log);
+  const loose = it.tk.filter(x => !x.t.time || x.log);
+  const overdue = isToday ? tasks().filter(t => !t.done && isOverdue(t) && t.due && t.due < td).sort(byDue) : [];
+  const openDay = it.tk.filter(x => !x.log && !x.t.done && !x.ghost).length;
+  const doneDay = it.tk.filter(x => x.log || x.t.done).length;
+  const totalDay = openDay + doneDay;
+  /* header */
+  const sum = [`<b>${openDay ? openDay + ' to do' : 'Nothing left to do'}</b>`];
+  if (overdue.length) sum.push(`<span class="or">${overdue.length} late</span>`);
+  if (timedEv.length) sum.push(`${timedEv.length} ${timedEv.length === 1 ? 'meeting' : 'meetings'}`);
+  const segs = totalDay ? (totalDay <= 14
+    ? `<div class="segs" aria-label="${doneDay} of ${totalDay} done">${Array.from({ length: totalDay }, (_, i) => `<i class="${i < doneDay ? 'd' : ''}"></i>`).join('')}</div>`
+    : `<div class="segs one"><i style="flex:${doneDay}" class="d"></i><i style="flex:${totalDay - doneDay}"></i></div>`) : '';
+  const head = `<header class="dayhead">
+      <div class="wd">${esc(isToday ? wdName(sel) : (diffD(td, sel) === 1 ? 'Tomorrow · ' : diffD(td, sel) === -1 ? 'Yesterday · ' : '') + wdName(sel))}${isToday ? '' : `<button class="link" data-act="today">Back to today</button>`}</div>
+      <h1 class="dh">${pd(sel).getDate()} <em>${esc(monName(sel))}</em></h1>
+      <div class="sum">${sum.join(' · ')}${totalDay ? `<span class="mono dn">${doneDay} of ${totalDay} done</span>` : ''}</div>
+      ${segs}
+    </header>`;
+  /* week strip (phone) */
+  const days = []; for (let i = 0; i < 7; i++) days.push(addD(wkStart, i));
+  const strip = ui.calOpen ? `<div class="wkbar"><span class="wkm"></span><span class="wkb"><button class="link" data-act="month-toggle" aria-expanded="true">Week${I2.down}</button></span></div>` : `<div class="wkbar"><span class="wkm">${esc(monName(wkStart) === monName(addD(wkStart, 6)) ? monName(wkStart) : monName(wkStart).slice(0, 3) + ' – ' + monName(addD(wkStart, 6)).slice(0, 3))}</span>
+      <span class="wkb"><button class="ib sm" data-act="wk" data-n="-7" aria-label="Previous week">${I.l}</button><button class="ib sm" data-act="wk" data-n="7" aria-label="Next week">${I.r}</button><button class="link" data-act="month-toggle" aria-expanded="${!!ui.calOpen}">${ui.calOpen ? 'Week' : 'Month'}${I2.down}</button></span></div>
+    ${ui.calOpen ? '' : `<div class="week">${days.map(d => { const x = idx[d] || { ev: [], tk: [] }; const n = Math.min(3, x.ev.length + x.tk.filter(y => !y.log && !y.t.done).length); const urg = x.tk.some(y => !y.ghost && !y.t.done && isUrgent(y.t)); return `<button class="${d === sel ? 'sel' : ''} ${d === td ? 'today' : ''}" data-act="pick" data-d="${d}" aria-label="${esc(fmtDay(d))}"><span class="d">${esc(fmtDay(d, { weekday: 'short' }))}</span><span class="n">${pd(d).getDate()}</span><span class="dots">${Array.from({ length: n }, (_, i) => `<i class="${urg && i === 0 ? 'u' : ''}"></i>`).join('')}</span></button>`; }).join('')}</div>`}`;
+  /* schedule */
+  const rows = [
+    ...timedEv.map(e => ({ at: hm(e.start), html: `<div class="slot"><span class="t">${hm(e.start)}<b>${hm(e.end)}</b></span><button class="evb" data-act="open-ev" data-k="${esc(evKey(e))}" style="--ec:${esc(calColor(e))}"><span class="tt" dir="auto">${esc(e.title)}</span>${e.location ? `<span class="mt" dir="auto">${esc(e.location)}</span>` : ''}</button></div>` })),
+    ...timedTk.map(x => ({ at: x.t.time, html: `<div class="slot"><span class="t">${esc(x.t.time)}</span>${taskHTML(x.t, { hideDue: true, noTime: true, ghost: x.ghost })}</div>` }))
+  ].sort((a, b) => a.at < b.at ? -1 : 1);
+  if (isToday && rows.length) {
+    const nowT = pad(new Date().getHours()) + ':' + pad(new Date().getMinutes());
+    const i = rows.findIndex(r => r.at > nowT);
+    const line = { at: nowT, html: `<div class="nowl"><span class="t">${nowT}</span><i></i></div>` };
+    if (i === -1) rows.push(line); else rows.splice(i, 0, line);
+  }
+  const sched = (allDayEv.length || rows.length) ? `<section class="blk"><div class="h2"><h2>Schedule</h2><span class="mono">${it.ev.length ? it.ev.length + (it.ev.length === 1 ? ' event' : ' events') : ''}${it.ev.length && timedTk.length ? ' · ' : ''}${timedTk.length ? timedTk.length + (timedTk.length === 1 ? ' task' : ' tasks') : ''}</span></div>
+      ${allDayEv.map(e => `<div class="slot"><span class="t">All day</span><button class="evb" data-act="open-ev" data-k="${esc(evKey(e))}" style="--ec:${esc(calColor(e))}"><span class="tt" dir="auto">${esc(e.title)}</span></button></div>`).join('')}
+      ${rows.map(r => r.html).join('')}</section>` : '';
+  /* to do */
+  const todo = [...overdue.map(t => taskHTML(t)), ...loose.filter(x => !x.ghost || !x.t.done).map(x => taskHTML(x.t, { hideDue: true, ghost: x.ghost, log: x.log }))];
+  const todoBlk = `<section class="blk"><div class="h2"><h2>${isToday ? 'To do today' : 'To do'}</h2><span class="mono">${todo.length || ''}</span></div>
+      ${todo.join('') || `<div class="empty">${isToday ? 'Nothing due today.' : 'Nothing on this day.'}</div>`}
+      <div class="addday"><button class="link" data-act="new-task" data-d="${sel}">${I.plusS}Task</button><button class="link" data-act="new-event" data-d="${sel}">${I.plusS}Event</button></div></section>`;
+  /* coming up */
+  const soon = isToday ? tasks().filter(t => !t.done && t.due && t.due > td && t.due <= addD(td, 7) && !(t.repeat && t.repeat.freq === 'daily')).sort(byDue).slice(0, 5) : [];
+  const soonBlk = `<section class="blk"><div class="h2"><h2>Coming up</h2><button class="link" data-act="home-all">All tasks</button></div>
+      ${soon.map(t => taskHTML(t)).join('') || '<div class="empty">Nothing else this week.</div>'}</section>`;
+  if (ui.homeAll) return `<div class="tday">${head}</div><div class="narrow">${allTasksHTML()}</div>`;
+  return `${topbar(`<img src="logo.png" alt="Zerodocs control" width="48" height="29" class="mob-logo">`, `<button class="ib" data-act="settings" aria-label="Settings">${I.gear}</button>`)}<div class="hero"><img src="header.png" alt="Ctrl Z Station" decoding="async"></div>
+    <div class="tday">
+      <div class="tmain">${head}<div class="mob">${strip}${ui.calOpen ? monthPanel(evAll) : ''}</div>${sched}<div class="mob">${todoBlk}${isToday ? soonBlk : ''}</div></div>
+      <aside class="tside desk">${monthPanel(evAll)}${todoBlk}${isToday ? soonBlk : ''}</aside>
+    </div>`;
+}
+/* month grid: a dark panel with serif numerals; dots show what is on each day */
+function monthPanel(evAll) {
+  const m = ui.month; const { start, end } = gridRange(m);
+  const idx = buildIndex(start, end, (evCache[m] || evAll).filter(e => !(db.prefs.hiddenCals || []).includes(e.calId)));
   const td = today();
   let cells = '';
   for (let d = start; d <= end; d = addD(d, 1)) {
-    const it = idx[d] || { ev: [], tk: [] };
-    const out = d.slice(0, 7) !== m;
-    const kinds = new Set();
-    if (it.ev.length) kinds.add('ev');
-    it.tk.forEach(x => { if (x.log || x.t.done) return; kinds.add(isUrgent(x.t) && !x.ghost ? 'urgent' : 'task'); });
-    const dots = [...kinds].map(k => `<i class="k-${k}"></i>`).join('');
-    const items = [
-      ...it.ev.map(e => `<span class="c-ev" dir="auto">${e.allDay ? '' : hm(e.start) + ' '}${esc(e.title)}</span>`),
-      ...it.tk.map(x => `<span class="${x.log || x.t.done ? 'c-done' : isUrgent(x.t) && !x.ghost ? 'c-urgent' : 'c-task'}" dir="auto">${esc(x.t.title)}</span>`)
-    ];
-    const chips = items.slice(0, 3).join('') + (items.length > 3 ? `<span class="more">+${items.length - 3} more</span>` : '');
-    const n = it.ev.length + it.tk.length;
-    cells += `<button class="cell ${out ? 'out' : ''} ${d === td ? 'today' : ''} ${d === ui.sel ? 'sel' : ''}" data-act="pick" data-d="${d}" aria-label="${esc(fmtDay(d))}${n ? ', ' + n + ' items' : ''}"><span class="n">${pd(d).getDate()}</span><span class="dots">${dots}</span><span class="chips">${chips}</span></button>`;
+    const x = idx[d] || { ev: [], tk: [] };
+    const n = Math.min(3, x.ev.length + x.tk.filter(y => !y.log && !y.t.done).length);
+    const urg = x.tk.some(y => !y.ghost && !y.t.done && isUrgent(y.t));
+    cells += `<button class="mc ${d.slice(0, 7) !== m ? 'out' : ''} ${d === td ? 'today' : ''} ${d === ui.sel ? 'sel' : ''}" data-act="pick" data-d="${d}" aria-label="${esc(fmtDay(d))}"><span>${pd(d).getDate()}</span><i>${Array.from({ length: n }, (_, i) => `<b class="${urg && i === 0 ? 'u' : ''}"></b>`).join('')}</i></button>`;
   }
-  const sel = idx[ui.sel] || { ev: [], tk: [] };
-  const selList = sel.ev.map(evHTML).join('') + sel.tk.map(x => taskHTML(x.t, { hideDue: true, ghost: x.ghost, log: x.log })).join('');
-  const urgent = tasks().filter(isUrgent).sort(byDue);
-  const notThisMonth = m !== td.slice(0, 7) || ui.sel !== td;
-  return `<div class="hero"><img src="header.png" alt="Ctrl Z Station" decoding="async"></div>${pulseHTML()}<div class="home">
-    <div class="left calp">
-      <div class="hdr">
-        <h1>${first.toLocaleDateString('en-GB', { month: 'long' })} <span>${first.getFullYear()}</span></h1>
-        <div class="row">
-          ${notThisMonth ? '<button class="pill" data-act="today">Today</button>' : ''}
-          <button class="ib" data-act="prev" aria-label="Previous month">${I.l}</button>
-          <button class="ib" data-act="next" aria-label="Next month">${I.r}</button>
-        </div>
-      </div>
-      <div class="cal-wd">${['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'].map(w => `<span><span class="wd-s">${w[0]}</span><span class="wd-l">${w}</span></span>`).join('')}</div>
-      <div class="cal">${cells}</div>
-      <div class="legend" style="margin-top:8px"><span><i class="k-ev"></i>Google events</span><span><i class="k-task"></i>Tasks</span><span><i class="k-urgent"></i>Urgent</span></div>
-    </div>
-    <div class="right">
-      <section class="sec">
-        <h2 class="day-title">${ui.sel === td ? 'Today · ' : ''}${esc(fmtDay(ui.sel))}</h2>
-        ${selList || '<div class="empty">Nothing scheduled</div>'}
-        <div class="add-row"><button class="dash" data-act="new-event" data-d="${ui.sel}">+ Event</button><button class="dash" data-act="new-task" data-d="${ui.sel}">+ Task</button></div>
-      </section>
-    </div>
-  </div>
-  ${homeStatsHTML()}
-  ${homeTasksHTML()}
-  <div class="desk note-add">${sec('Quick note', qaHTML('qa-h'))}</div>`;
+  return `<div class="mpanel"><div class="mh"><b>${esc(pd(m + '-01').toLocaleDateString('en-GB', { month: 'long' }))}</b><span class="mono">${m.slice(0, 4)}</span><span class="mb"><button class="ib sm" data-act="prev" aria-label="Previous month">${I.l}</button><button class="ib sm" data-act="next" aria-label="Next month">${I.r}</button></span></div>
+    <div class="mgrid">${['S', 'M', 'T', 'W', 'T', 'F', 'S'].map(w => `<span class="wd">${w}</span>`).join('')}${cells}</div></div>`;
 }
 /* review numbers for everything, whatever the Review page is filtered to */
 function globalReview(from, to) {
@@ -2317,13 +2433,15 @@ function notesView() {
   const list = notes();
   const q = ui.nq.trim().toLowerCase();
   const shown = q ? list.filter(n => ((n.title || '') + ' ' + (n.text || '')).toLowerCase().includes(q)) : list;
-  let html = `<div class="narrow"><div class="hdr"><div><div class="sub">${list.length} ${list.length === 1 ? 'note' : 'notes'}</div><h1>Notes</h1></div><button class="pill" data-act="new-note">+ New note</button></div>`;
-  if (list.length > 5) html += `<input id="note-q" class="tin" dir="auto" type="search" placeholder="Search notes" value="${esc(ui.nq)}" style="margin-bottom:12px">`;
-  html += `<div class="ngrid">${shown.map((n, i) => {
+  const card = n => {
     const { t, p } = noteTitle(n);
-    return `<button class="ncard ${i === 0 && !q && !n.color ? 'first' : ''} ${n.color ? 'tinted' : ''}" data-act="open-note" data-id="${esc(n.id)}" ${n.color ? `style="--npage:${esc(n.color)}"` : ''}><span class="t" dir="auto">${esc(t)}</span>${p ? `<span class="p" dir="auto">${esc(p.slice(0, 280))}</span>` : ''}${hasInk(n) ? `<canvas class="nthumb" data-ink="${esc(n.id)}" aria-hidden="true"></canvas>` : ''}<span class="d">${(n.audio || []).length ? `<span class="vtag">${I.mic}${n.audio.length > 1 ? n.audio.length : ''}</span>` : ''}${esc(new Date(n.updatedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</span></button>`;
-  }).join('')}</div>`;
-  if (!list.length) html += '<div class="empty" style="padding-top:20px">No notes yet. Tap “New note” to start writing.</div>';
+    return `<button class="ncard ${n.color ? 'tinted' : ''}" data-act="open-note" data-id="${esc(n.id)}" ${n.color ? `style="--npage:${esc(n.color)}"` : ''}><span class="t" dir="auto">${esc(t)}</span>${p ? `<span class="p" dir="auto">${esc(p.slice(0, 320))}</span>` : ''}${hasInk(n) ? `<canvas class="nthumb" data-ink="${esc(n.id)}" aria-hidden="true"></canvas>` : ''}${(n.audio || []).length ? `<span class="wave" aria-hidden="true">${[6, 12, 18, 9, 14, 20, 11, 7, 16, 10, 5, 13, 19, 8, 4, 12, 9].map(h => `<i style="height:${h}px"></i>`).join('')}</span>` : ''}<span class="d">${(n.audio || []).length ? `<span class="vtag">${I.mic}${fmtDur(n.audio.reduce((a, c) => a + (c.dur || 0), 0))}</span>` : '<span></span>'}<span>${esc(relDay(isoDay(new Date(n.updatedAt).toISOString())))}</span></span></button>`;
+  };
+  let html = `<div class="nwrap">${topbar('', `<button class="ib" data-act="new-note" aria-label="New note">${I.plus}</button>`)}
+    <header class="pagehead"><h1 class="serif-h">Notes</h1><div class="sum">${list.length} ${list.length === 1 ? 'note' : 'notes'}</div></header>
+    <label class="search">${I2.search}<input id="note-q" dir="auto" type="search" placeholder="Search" value="${esc(ui.nq)}"></label>`;
+  html += `<div class="ngrid">${shown.map(card).join('')}</div>`;
+  if (!list.length) html += '<div class="empty" style="padding-top:20px">No notes yet. Tap + to start writing.</div>';
   else if (!shown.length) html += '<div class="empty">No notes match.</div>';
   return html + '</div>';
 }
@@ -2370,55 +2488,83 @@ function areaView(a) {
   const done = loose.filter(t => t.done).sort((x, y) => ((x.doneAt || '') < (y.doneAt || '') ? 1 : -1));
   const openAll = all.filter(t => !t.done);
   const overdue = openAll.filter(isOverdue).length;
+  const urgent = openAll.filter(isUrgent).length;
+  const td = today(), wk = addD(td, 7);
+  const groups = [
+    ['Late', open.filter(t => t.due && t.due < td), 'or'],
+    ['Today', open.filter(t => t.due === td)],
+    ['This week', open.filter(t => t.due > td && t.due <= wk)],
+    ['Later', open.filter(t => t.due > wk)],
+    ['Anytime', open.filter(t => !t.due)]
+  ].filter(g => g[1].length);
   let html = `<div class="narrow">
-    <div class="hdr ahdr" style="--ac:${a.color}"><div><div class="sub">${openAll.length} open${overdue ? ` · <span class="or">${overdue} overdue</span>` : ''} · ${ps.length} open ${ps.length === 1 ? 'project' : 'projects'}${psDone.length ? ` · ${psDone.length} completed` : ''}</div><h1 class="area-h">${adot(a)}${esc(a.name)}</h1></div></div>
+    ${topbar(backBtn('sections', 'Sections'), `<button class="ib" data-act="settings" aria-label="Settings">${I.gear}</button>`)}
+    <header class="sechead" style="--ac:${a.color}"><div class="lbl"><i class="tabsq" style="background:${a.color}"></i>Section</div><h1>${esc(a.name)}</h1>
+      <div class="bigstats"><div><b>${openAll.length}</b><span>open</span></div><div><b>${ps.length}</b><span>${ps.length === 1 ? 'project' : 'projects'}</span></div>${overdue ? `<div><b class="or">${overdue}</b><span>late</span></div>` : urgent ? `<div><b class="or">${urgent}</b><span>urgent</span></div>` : ''}</div></header>
     ${LIST_AREAS.includes(a.id) ? `<div class="add3"><button class="pill" data-act="focus" data-f="area-new">+ Task</button><button class="pill" data-act="focus" data-f="proj-new">+ Project</button><button class="pill" data-act="new-list" data-area="${a.id}">+ To-do list</button><button class="pill" data-act="new-list" data-area="${a.id}" data-kind="habit">+ Habit tracker</button></div>${personalStatsHTML(a.id)}` : ''}`;
   html += sec('Projects', `<div class="plist">${ps.map(pcardHTML).join('')}</div>
-    <div class="card" style="padding:0 6px 0 14px;margin-top:${ps.length ? 10 : 0}px">${addForm('proj', 'New project in ' + a.name, { id: 'proj-new' })}</div>
-    ${ps.length || psDone.length ? '' : '<p class="mut" style="font-size:12px;margin:8px 2px 0">A project keeps one goal’s tasks together, split into stages if you like.</p>'}
-    ${psDone.length ? `<div class="sec-h" style="margin-top:14px"><h2>Completed projects · ${psDone.length}</h2><button class="pill" data-act="show-donep">${ui.showDoneP ? 'Hide' : 'Show'}</button></div>${ui.showDoneP ? `<div class="plist">${psDone.map(pcardHTML).join('')}</div>` : ''}` : ''}`);
+    <div class="addline">${addForm('proj', 'New project in ' + a.name, { id: 'proj-new' })}</div>
+    ${ps.length || psDone.length ? '' : '<p class="hint">A project keeps one goal’s tasks together, split into stages if you like.</p>'}
+    ${psDone.length ? `<div class="sec-h" style="margin-top:16px"><h2>Completed projects · ${psDone.length}</h2><button class="link" data-act="show-donep">${ui.showDoneP ? 'Hide' : 'Show'}</button></div>${ui.showDoneP ? `<div class="plist">${psDone.map(pcardHTML).join('')}</div>` : ''}` : ''}`, { right: `<span class="mono">${ps.length || ''}</span>` });
   if (LIST_AREAS.includes(a.id)) html += habitsHTML(a.id) + listsHTML(a.id);
-  html += sec('Tasks', `${open.map(t => taskHTML(t, { inArea: true })).join('') || '<div class="empty" style="padding:6px 0 4px">No loose tasks.</div>'}
-    ${addForm('area-task', 'Add a task to ' + a.name, { id: 'area-new' })}`, { right: `<span class="mut">${open.length}</span>` });
-  if (done.length) html += `<section class="sec"><div class="sec-h"><h2>Completed</h2><button class="pill" data-act="show-done">${ui.showDone ? 'Hide' : 'Show ' + done.length}</button></div>${ui.showDone ? done.slice(0, 40).map(t => taskHTML(t, { inArea: true })).join('') : ''}</section>`;
+  html += `<section class="sec"><div class="sec-h"><h2>Tasks</h2><span class="mono">${open.length || ''}</span></div>
+    ${groups.map(([n, list, cls]) => `<div class="grp-h ${cls || ''}">${n}</div>${list.map(t => taskHTML(t, { inArea: true, hideDue: n === 'Today' })).join('')}`).join('') || '<div class="empty">No loose tasks.</div>'}
+    <div class="addline">${addForm('area-task', 'Add a task to ' + a.name, { id: 'area-new' })}</div></section>`;
+  if (done.length) html += `<section class="sec"><div class="sec-h"><h2>Completed</h2><button class="link" data-act="show-done">${ui.showDone ? 'Hide' : 'Show ' + done.length}</button></div>${ui.showDone ? done.slice(0, 40).map(t => taskHTML(t, { inArea: true })).join('') : ''}</section>`;
   return html + '</div>';
 }
 function projectView(p) {
   const s = projStats(p);
   const ts = allTasks().filter(t => t.projectId === p.id);
   const a = areaOf(p.areaId);
+  const td = today();
   const name = p.name.toLowerCase();
-  const linked = unionEvents().filter(e => e.title.toLowerCase().includes(name) && evDays(e).slice(-1)[0] >= today()).slice(0, 5);
+  const linked = unionEvents().filter(e => e.title.toLowerCase().includes(name) && evDays(e).slice(-1)[0] >= td).slice(0, 5);
+  const member = p.sh && shRole(p.sh) !== 'owner';
+  const stages = p.stages || [];
+  const curSt = stages.find(x => x.start && x.due && x.start <= td && x.due >= td);
+  const stState = st => { const list = ts.filter(t => t.stageId === st.id); if (list.length && list.every(t => t.done)) return 'done'; if (curSt && curSt.id === st.id) return 'cur'; if (st.due && st.due < td) return 'past'; return ''; };
   const stageBlock = (st) => {
-    const list = sortOpen(ts.filter(t => (st ? t.stageId === st.id : !t.stageId || !(p.stages || []).some(x => x.id === t.stageId))));
+    const list = sortOpen(ts.filter(t => (st ? t.stageId === st.id : !t.stageId || !stages.some(x => x.id === t.stageId))));
     const doneN = list.filter(t => t.done).length;
+    if (!st && !list.length && stages.length) return '';
+    const state = st ? stState(st) : '';
     const head = st
-      ? `<div class="stage-h"><input id="st-${esc(st.id)}" data-stage="${esc(st.id)}" dir="auto" value="${esc(st.name)}" aria-label="Stage name"><span class="mut num" style="font-size:12px;white-space:nowrap">${doneN}/${list.length}</span><span class="sdates"><input type="date" id="sts-${esc(st.id)}" data-stage-start="${esc(st.id)}" value="${esc(st.start || '')}" aria-label="Stage start date"><span>→</span><input type="date" id="std-${esc(st.id)}" data-stage-due="${esc(st.id)}" value="${esc(st.due || '')}" aria-label="Stage due date"></span><button class="ib" data-act="del-stage" data-sid="${esc(st.id)}" aria-label="Delete stage">${I.x}</button></div>`
-      : `<div class="stage-h"><span style="font-size:15px;font-weight:600;padding:4px 0">${(p.stages || []).length ? 'Other' : 'Tasks'}</span><span class="mut num" style="font-size:12px">${doneN}/${list.length}</span></div>`;
-    if (!st && !list.length && (p.stages || []).length) return '';
-    return `<div class="stage">${head}${list.map(t => taskHTML(t, { inArea: true, inProject: true })).join('')}
-      ${addForm('stage', st ? 'Add task to ' + st.name : 'Add task', { id: 'add-' + (st ? st.id : 'none'), data: `data-sid="${st ? esc(st.id) : ''}"` })}</div>`;
+      ? `<div class="stage-h"><input id="st-${esc(st.id)}" data-stage="${esc(st.id)}" dir="auto" value="${esc(st.name)}" aria-label="Stage name"><span class="sdates"><input type="date" id="sts-${esc(st.id)}" data-stage-start="${esc(st.id)}" value="${esc(st.start || '')}" aria-label="Stage start date"><span>–</span><input type="date" id="std-${esc(st.id)}" data-stage-due="${esc(st.id)}" value="${esc(st.due || '')}" aria-label="Stage due date"></span><span class="mono">${doneN}/${list.length}${state === 'cur' ? ' · now' : ''}</span><button class="ib sm" data-act="del-stage" data-sid="${esc(st.id)}" aria-label="Delete stage">${I.x}</button></div>`
+      : `<div class="stage-h"><span class="sname">${stages.length ? 'Other' : 'Tasks'}</span><span class="mono">${doneN}/${list.length}</span></div>`;
+    return `<div class="stage ${state} ${st ? '' : 'nost'}"><span class="sdot" aria-hidden="true"></span><div class="sbody">${head}${list.map(t => taskHTML(t, { inArea: true, inProject: true })).join('')}
+      ${addForm('stage', st ? 'Add to ' + st.name : 'Add a task', { id: 'add-' + (st ? st.id : 'none'), data: `data-sid="${st ? esc(st.id) : ''}"` })}</div></div>`;
   };
+  const daysLeft = curSt && curSt.due ? diffD(td, curSt.due) : null;
+  const prog = `<div class="pnum"><b>${s.done}<em>/${s.total}</em></b><span>${s.total === 1 ? 'task' : 'tasks'} done${curSt ? `<br><span dir="auto">${esc(curSt.name)}</span> ends ${daysLeft === 0 ? 'today' : daysLeft === 1 ? 'tomorrow' : 'in ' + daysLeft + ' days'}` : p.deadline ? `<br>Due ${esc(shortDay(p.deadline))}` : ''}</span></div>
+    <div class="pbarx"><i style="width:${s.pct}%"></i></div>`;
+  const people = p.sh ? `<section class="sec"><div class="sec-h"><h2>People</h2><button class="link" data-act="proj-share">Manage</button></div>${shMembers(p.sh).map(m => `<div class="mrow sm">${avatar(p.sh, m.email)}<div class="mtx"><b>${esc(m.email === me() ? 'You' : shName(p.sh, m.email))}</b></div><span class="mrole">${m.role === 'owner' ? 'Owner' : m.role === 'reader' ? 'Can view' : 'Can edit'}</span></div>`).join('')}</section>` : '';
   return `<div class="pview">
-    <div class="hdr" style="margin-bottom:8px">${p.sh && shRole(p.sh) !== 'owner' ? `<button class="pill" data-act="nav" data-v="shared" style="display:inline-flex;align-items:center;gap:6px;padding-left:8px">${I.l}Shared</button>` : `<button class="pill" data-act="nav" data-v="${a ? a.id : 'home'}" style="display:inline-flex;align-items:center;gap:6px;padding-left:8px">${I.l}${a ? adot(a) + esc(a.name) : 'Home'}</button>`}<span class="phbtns">${p.sh ? `<button class="avs" data-act="proj-share" aria-label="People">${shMembers(p.sh).slice(0, 5).map(m => avatar(p.sh, m.email)).join('')}${shMembers(p.sh).length > 5 ? `<span class="av more">+${shMembers(p.sh).length - 5}</span>` : ''}</button>` : ''}<button class="ib" data-act="proj-pdf" aria-label="Export PDF" title="Export PDF">${I.pdf}</button><button class="ib" data-act="proj-share" aria-label="Share project" title="Share">${I.people}</button><button class="ib" data-act="del-project" aria-label="${p.sh && shRole(p.sh) !== 'owner' ? 'Leave project' : 'Delete project'}">${I.trash}</button></span></div>
-    <div class="ptitle"><button class="pchk ${p.done ? 'on' : ''}" data-act="proj-done" aria-pressed="${!!p.done}" aria-label="${p.done ? 'Mark project not done' : 'Mark project done'}">${p.done ? I.check : ''}</button><input id="proj-name" class="title-in" style="font-size:28px" dir="auto" value="${esc(p.name)}" aria-label="Project name"></div>
+    ${topbar(member ? backBtn('shared', 'Shared') : backBtn(a ? a.id : 'sections', a ? esc(a.name) : 'Sections', a ? `<i class="tabsq" style="background:${a.color}"></i>` : ''),
+      `${p.sh ? `<button class="avs" data-act="proj-share" aria-label="People">${shMembers(p.sh).slice(0, 4).map(m => avatar(p.sh, m.email)).join('')}</button>` : ''}<button class="ib" data-act="proj-pdf" aria-label="Export PDF" title="Export PDF">${I.pdf}</button><button class="ib" data-act="proj-share" aria-label="Share project" title="Share">${I.people}</button><button class="ib" data-act="del-project" aria-label="${member ? 'Leave project' : 'Delete project'}" title="${member ? 'Leave' : 'Delete'}">${I.trash}</button>`)}
+    <div class="pgrid"><div class="pmain">
+    <div class="pmeta">
+      <div class="pprio" role="group" aria-label="Importance">${PRIO.map(([v, l]) => `<button data-act="proj-prio" data-v="${v}" class="pr-${v} ${(p.priority || 0) === v ? 'on' : ''}" aria-pressed="${(p.priority || 0) === v}">${l}</button>`).join('')}</div>
+      <label class="pdl">Due <input type="date" id="proj-deadline" value="${esc(p.deadline || '')}"></label>
+      ${member ? `<span>Shared by ${esc(shName(p.sh, SH[p.sh].data && SH[p.sh].data.owner))}</span>` : `<label class="pdl">Section <select id="proj-area" class="mini-sel"><option value="">None</option>${AREAS.map(x => `<option value="${x.id}" ${p.areaId === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>`}
+    </div>
+    <div class="ptitle"><button class="pchk ${p.done ? 'on' : ''}" data-act="proj-done" aria-pressed="${!!p.done}" aria-label="${p.done ? 'Mark project not done' : 'Mark project done'}">${p.done ? I.check : ''}</button><textarea id="proj-name" class="title-in ptin" rows="1" dir="auto" aria-label="Project name">${esc(p.name)}</textarea></div>
     ${p.done ? `<div class="pdone-note">${I.check} Completed ${esc(fmtDay(isoDay(p.doneAt || new Date().toISOString())))}</div>` : s.total && s.done === s.total ? `<button class="pdone-cta" data-act="proj-done">All ${s.total} tasks are done. Mark the project as completed</button>` : ''}
     <textarea id="proj-brief" class="pbrief" rows="1" dir="auto" placeholder="Add a brief — the one thing to remember about this project" aria-label="Project brief">${esc(p.brief || '')}</textarea>
-    <div class="pprio" role="group" aria-label="Importance">${PRIO.map(([v, l]) => `<button data-act="proj-prio" data-v="${v}" class="pr-${v} ${(p.priority || 0) === v ? 'on' : ''}" aria-pressed="${(p.priority || 0) === v}">${l}</button>`).join('')}</div>
-    <div style="display:flex;align-items:center;gap:10px;margin:10px 0 12px;flex-wrap:wrap;font-size:13px" class="mut">
-      <span>${s.done} of ${s.total} done</span><span>·</span>
-      <label style="display:flex;align-items:center;gap:6px">Deadline <input type="date" id="proj-deadline" value="${esc(p.deadline || '')}" style="background:transparent;border:0;color:var(--tx);color-scheme:dark;font-size:13px"></label>
-      ${p.sh && shRole(p.sh) !== 'owner' ? `<span>·</span><span>Shared by ${esc(shName(p.sh, SH[p.sh].data && SH[p.sh].data.owner))}</span>` : `<span>·</span>
-      <label style="display:flex;align-items:center;gap:6px">Section <select id="proj-area" class="mini-sel"><option value="">None</option>${AREAS.map(x => `<option value="${x.id}" ${p.areaId === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>`}
+    <div class="mob">${prog}</div>
+    <div class="stages">
+      ${stages.map(stageBlock).join('')}
+      ${stageBlock(null)}
+      <button class="addstage" data-act="add-stage">${I.plusS}Add stage</button>
     </div>
-    <div class="prog"><i style="width:${s.pct}%"></i></div>
-    ${sec('Timeline', timelineHTML(p, ts))}
     ${boardHTML(p, ts)}
-    ${linked.length ? sec('Linked events', linked.map(evHTML).join('')) : ''}
-    <div class="sec-h" style="margin-top:26px"><h2>${(p.stages || []).length ? 'Stages' : 'List'}</h2></div>
-    ${(p.stages || []).map(stageBlock).join('')}
-    ${stageBlock(null)}
-    <div style="margin-top:22px"><button class="dash" style="width:100%" data-act="add-stage">+ Add stage</button></div>
+    </div>
+    <aside class="paside">
+      <div class="desk">${prog}</div>
+      ${sec('Timeline', timelineHTML(p, ts))}
+      ${people}
+      ${linked.length ? sec('Linked events', linked.map(evHTML).join('')) : ''}
+    </aside></div>
   </div>`;
 }
 
@@ -2538,51 +2684,52 @@ function reviewView() {
   const r = reviewData(from, to);
   const sc = r.sc;
   const loading = ui.rEvents === null;
+  const days = diffD(from, to) + 1;
+  const prev = reviewData(addD(from, -days), addD(from, -1));
+  const delta = r.done.length - prev.done.length;
   const seg = (n, l) => `<button class="${ui.rDays === n ? 'on' : ''}" data-act="range" data-n="${n}" aria-pressed="${ui.rDays === n}">${l}</button>`;
-  const stat = (k, v, s, cls = '', cc = '', bar = null, bc = 'var(--sand)') => `<div class="card stat ${cc}"><span class="k">${k}</span><span class="v ${cls}">${v}</span>${bar === null ? '' : `<span class="pbar"><i style="width:${Math.round(Math.max(0, Math.min(1, bar)) * 100)}%;background:${bc}"></i></span>`}<span class="s">${s}</span></div>`;
+  const kpi = (k, v, s) => `<div class="kpi"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${s}</span></div>`;
   const projOpts = (sc.fA ? areaProjects(sc.fA) : projects());
-  const entries = Object.entries(r.by).sort((a, b) => (b[1].done + b[1].open) - (a[1].done + a[1].open));
-  const max = Math.max(1, ...entries.map(([, v]) => v.done + v.open));
-  const byTitle = sc.fP ? 'By stage' : sc.fA ? 'By project' : 'By section';
-  const colorFor = n => { const a = AREAS.find(x => x.name === n); return a ? a.color : ''; };
+  const pct = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
   let focus = '';
   if (sc.fP) {
     const p = db.projects[sc.fP]; const s = projStats(p);
-    focus = sec('Project', `<div class="card" style="padding:14px 16px">
-      <div style="display:flex;justify-content:space-between;gap:10px;font-size:14px"><span dir="auto">${esc(p.name)}</span><span class="mut">${s.pct}% · ${s.done}/${s.total}</span></div>
-      <div class="prog" style="margin:10px 0"><i style="width:${s.pct}%"></i></div>
-      <div class="mut" style="font-size:12px">${p.deadline ? `Deadline ${esc(shortDay(p.deadline))} · ${diffD(today(), p.deadline) >= 0 ? diffD(today(), p.deadline) + ' days left' : '<span class="or">passed</span>'}` : 'No deadline'}</div>
-      ${(p.stages || []).map(st => { const ts = allTasks().filter(t => t.projectId === p.id && t.stageId === st.id); const d = ts.filter(t => t.done).length; const pc = ts.length ? Math.round(d / ts.length * 100) : 0; return `<div style="margin-top:12px"><div style="display:flex;justify-content:space-between;font-size:13px;gap:8px"><span dir="auto">${esc(st.name)}</span><span class="mut">${d}/${ts.length}${st.due ? ' · ' + esc(shortDay(st.due)) : ''}</span></div><div class="prog" style="margin-top:6px;height:4px"><i style="width:${pc}%"></i></div></div>`; }).join('')}
+    focus = sec('Project', `<div class="card" style="padding:16px">
+      <div style="display:flex;justify-content:space-between;gap:10px;font-size:15px"><span dir="auto">${esc(p.name)}</span><span class="mono">${s.pct}% · ${s.done}/${s.total}</span></div>
+      <div class="pbarx" style="margin:12px 0"><i style="width:${s.pct}%"></i></div>
+      <div class="mut" style="font-size:13px">${p.deadline ? `Due ${esc(shortDay(p.deadline))} · ${diffD(today(), p.deadline) >= 0 ? diffD(today(), p.deadline) + ' days left' : '<span class="or">passed</span>'}` : 'No deadline'}</div>
       <button class="btn full" style="margin-top:14px" data-act="open-project" data-id="${esc(p.id)}">Open project</button></div>`);
   } else if (sc.fA) {
     const ps = areaProjects(sc.fA);
     if (ps.length) focus = sec('Projects in ' + areaOf(sc.fA).name, `<div class="plist">${ps.map(pcardHTML).join('')}</div>`);
   }
-  return `<div class="narrow">
-    <div class="hdr"><div><div class="sub">${esc(shortDay(from))} – ${esc(shortDay(to))} · ${diffD(from, to) + 1} days</div><h1>Review</h1></div></div>
-    <div class="rsel">
-      <label><span class="sr">Section</span><select id="r-area"><option value="">All sections</option>${AREAS.map(a => `<option value="${a.id}" ${sc.fA === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
-      <label><span class="sr">Project</span><select id="r-proj"><option value="">${sc.fA ? 'Whole section' : 'All projects'}</option>${projOpts.map(p => `<option value="${esc(p.id)}" ${sc.fP === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
-    </div>
-    <div class="seg" role="group" aria-label="Range">${seg(7, '7 days')}${seg(14, '14 days')}${seg(30, '30 days')}${seg(0, 'Custom')}</div>
+  return `<div class="narrow rv">
+    ${topbar('', `<button class="ib" data-act="settings" aria-label="Settings">${I.gear}</button>`)}
+    <header class="pagehead"><h1 class="serif-h">${ui.rDays ? `Last ${ui.rDays} days` : 'Custom range'}</h1><div class="sum">${esc(shortDay(from))} – ${esc(shortDay(to))}${sc.fA || sc.fP ? ' · ' + esc(sc.label) : ''}</div></header>
+    <div class="rctl"><div class="seg sm" role="group" aria-label="Range">${seg(7, '7d')}${seg(14, '14d')}${seg(30, '30d')}${seg(0, 'Custom')}</div>
+      <div class="rsel">
+        <label><span class="sr">Section</span><select id="r-area"><option value="">All sections</option>${AREAS.map(a => `<option value="${a.id}" ${sc.fA === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
+        <label><span class="sr">Project</span><select id="r-proj"><option value="">${sc.fA ? 'Whole section' : 'All projects'}</option>${projOpts.map(p => `<option value="${esc(p.id)}" ${sc.fP === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
+      </div></div>
     ${ui.rDays === 0 ? `<div class="card" style="margin-top:10px"><div class="field"><label for="r-from">From</label><input type="date" id="r-from" value="${esc(from)}"></div><div class="field"><label for="r-to">To</label><input type="date" id="r-to" value="${esc(to)}"></div></div>` : ''}
-    <div class="stats" style="margin-top:16px">
-      ${stat('Tasks done', r.done.length, r.planned ? `${r.plannedDone} of ${r.planned} planned in range` : 'nothing planned in range', '', 'lite', r.planned ? r.plannedDone / r.planned : 0, 'var(--ink)')}
-      ${stat('Open now', r.open.length, r.overdue.length ? `<span class="or">${r.overdue.length} overdue</span>` : 'none overdue', '', '', r.open.length ? r.overdue.length / r.open.length : 0, 'var(--orange)')}
-      ${stat('Done late', r.late.length, r.late.length ? `avg ${r.avgLate.toFixed(1)} days late` : 'none', r.late.length ? 'or' : '', '', r.done.length ? r.late.length / r.done.length : 0, 'var(--orange)')}
-      ${stat(sc.fA || sc.fP ? 'Related events' : 'Meetings & events', loading ? '…' : r.events.length, loading ? 'loading calendar' : `${r.hours.toFixed(1)} h in calendar`)}
+    <div class="bignum"><b>${r.done.length}</b><span>${r.done.length === 1 ? 'task' : 'tasks'} done<br>${delta === 0 ? 'same as' : `<em class="${delta > 0 ? 'up' : 'down'}">${delta > 0 ? '+' : '−'}${Math.abs(delta)}</em> vs`} the ${days} days before</span></div>
+    ${reviewChart(r)}
+    <div class="kpis">
+      ${kpi('On time', pct(r.onTime, r.withDue.length), r.withDue.length ? `${r.onTime} of ${r.withDue.length} dated` : 'no dated tasks done')}
+      ${kpi('Open now', r.open.length, r.overdue.length ? `<span class="or">${r.overdue.length} late</span>` : 'none late')}
+      ${kpi(sc.fA || sc.fP ? 'Related events' : 'In meetings', loading ? '…' : r.hours.toFixed(1) + '<small>h</small>', loading ? 'loading calendar' : `${r.events.length} ${r.events.length === 1 ? 'event' : 'events'}`)}
+      ${kpi('Streak', r.streak + `<small> ${r.streak === 1 ? 'day' : 'days'}</small>`, `${r.activeDays} active of ${r.days}`)}
     </div>
-    <p class="mut" style="font-size:13px;margin:12px 2px 0">${r.created.length} created · ${r.postponed.length} postponements · ${r.rep.filter(l => !l.late).length}/${r.rep.length} repeats on time</p>
+    <p class="hint">${r.created.length} created · ${r.postponed.length} postponed · ${r.rep.filter(l => !l.late).length}/${r.rep.length} repeats on time${r.late.length ? ` · ${r.late.length} done late` : ''}</p>
     ${reviewNumbersHTML(r)}
     ${focus}
-    ${entries.length ? sec(byTitle, `<div class="bars">${entries.map(([n, v]) => `<div><div class="l"><span dir="auto" style="display:flex;align-items:center;gap:7px">${colorFor(n) ? `<i class="adot" style="background:${colorFor(n)}"></i>` : ''}${esc(n)}</span><span class="mut">${v.done} done · ${v.open} open${v.overdue ? ` · <span class="or">${v.overdue} late</span>` : ''}</span></div><div class="t"><i style="width:${Math.round((v.done + v.open) / max * 100)}%;${colorFor(n) ? 'background:' + colorFor(n) : ''}"></i></div></div>`).join('')}</div>`) : ''}
-    ${r.overdue.length ? sec('Overdue', r.overdue.slice(0, 12).map(t => taskHTML(t, { inArea: !!sc.fA })).join(''), { cls: 'or' }) : ''}
-    ${sec('Export full summary', `<p class="mut" style="margin:0 0 12px;font-size:13px;line-height:1.55">${esc(sc.label)}: every task and event in the range — created, due and done times, section, project, notes, subtasks, repeats and postponements.</p>
+    ${r.overdue.length ? sec('Late', r.overdue.slice(0, 12).map(t => taskHTML(t, { inArea: !!sc.fA })).join(''), { cls: 'or' }) : ''}
+    ${sec('Export full summary', `<p class="hint" style="margin-top:0">${esc(sc.label)}: every task and event in the range — created, due and done times, section, project, notes, subtasks, repeats and postponements.</p>
       <button class="btn pri full" data-act="copy-md" ${loading ? 'disabled' : ''}>Copy for Claude (Markdown)</button>
       <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:8px">
-        <button class="btn" data-act="save-md" ${loading ? 'disabled' : ''} style="font-size:14px;padding:0 8px">Save to Drive</button>
-        <button class="btn" data-act="dl-csv" ${loading ? 'disabled' : ''} style="font-size:14px;padding:0 8px">CSV</button>
-        <button class="btn" data-act="dl-json" ${loading ? 'disabled' : ''} style="font-size:14px;padding:0 8px">JSON</button>
+        <button class="btn" data-act="save-md" ${loading ? 'disabled' : ''}>Save to Drive</button>
+        <button class="btn" data-act="dl-csv" ${loading ? 'disabled' : ''}>CSV</button>
+        <button class="btn" data-act="dl-json" ${loading ? 'disabled' : ''}>JSON</button>
       </div>`)}
   </div>`;
 }
@@ -2727,14 +2874,16 @@ function renderSheet() {
   else if (s.type === 'settings') inner = settingsSheet();
   else if (s.type === 'share') inner = shareSheet();
   else if (s.type === 'join') inner = joinSheet();
+  else if (s.type === 'add') inner = addSheet();
   else if (s.type === 'note') { const n = db.notes[s.id]; if (!n || n.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = noteSheet(n); }
   else if (s.type === 'image') inner = imageSheet(s);
   else if (s.type === 'list') { const l = db.lists[s.id]; if (!l || l.deleted) { ui.sheet = null; root.innerHTML = ''; document.body.style.overflow = ''; return; } inner = listSheet(l); }
   const sc = $('.sheet', root); const top = sc ? sc.scrollTop : 0;
   if (s.type === 'note') { const nb = $('#n-body', root); const nt = nb ? nb.scrollTop : 0; root.innerHTML = inner; growNote(); bindInk(); hydrateAud(root); try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch { } const b2 = $('#n-body', root); if (b2) { b2.scrollTop = nt; drawInkView(); } return; }
-  root.innerHTML = `<div class="sheet-bg" data-act="close-sheet"></div><div class="sheet" role="dialog" aria-modal="true" aria-label="${s.type}">${inner}</div>`;
+  root.innerHTML = `<div class="sheet-bg" data-act="close-sheet"></div><div class="sheet ${s.type === 'add' ? 'bsheet' : ''}" role="dialog" aria-modal="true" aria-label="${s.type}">${inner}</div>`;
   const nsc = $('.sheet', root); if (nsc) nsc.scrollTop = top;
   autoGrow(); hydrateImgs(root);
+  if (s.type === 'add' && !s.focused) { s.focused = true; setTimeout(() => { const i = $('#add-in'); if (i) { i.focus(); const n = i.value.length; try { i.setSelectionRange(n, n); } catch { } } }, 60); }
 }
 function autoGrow() { document.querySelectorAll('textarea.title-in').forEach(el => { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }); }
 function taskSheet(t) {
@@ -2942,7 +3091,12 @@ document.addEventListener('click', e => {
     case 'pin-widget': try { ZeroNative.pinWidget(); } catch { } break;
     case 'install': if (deferredPrompt) { deferredPrompt.prompt(); deferredPrompt.userChoice.finally(() => { deferredPrompt = null; renderSheet(); }); } break;
     case 'show-done': ui.showDone = !ui.showDone; renderMain(); break;
-    case 'home-all': ui.homeAll = !ui.homeAll; renderMain(); break;
+    case 'home-all': ui.homeAll = !ui.homeAll; renderMain(); window.scrollTo(0, 0); break;
+    case 'all-tasks': ui.homeAll = true; go('home'); break;
+    case 'add-open': openSheet({ type: 'add', kind: 'task', text: '' }); break;
+    case 'add-kind': { const s = ui.sheet; if (s && s.type === 'add') { const i = $('#add-in'); s.text = i ? i.value : s.text; s.kind = el.dataset.k; s.focused = false; renderSheet(); } break; }
+    case 'wk': { ui.sel = addD(ui.sel, +el.dataset.n); if (ui.sel.slice(0, 7) !== ui.month) setMonth(ui.sel.slice(0, 7)); else renderMain(); break; }
+    case 'month-toggle': ui.calOpen = !ui.calOpen; if (ui.calOpen && ui.month !== ui.sel.slice(0, 7)) setMonth(ui.sel.slice(0, 7)); else renderMain(); break;
     case 'show-donep': ui.showDoneP = !ui.showDoneP; renderMain(); break;
     case 'proj-done': {
       const p = db.projects[ui.projectId]; if (!p) break;
@@ -3013,14 +3167,15 @@ document.addEventListener('keydown', e => {
   const el = e.target;
   if (e.key === 'Escape' && ui.sheet) { closeSheet(); return; }
   if (e.key === 'n' && !e.metaKey && !e.ctrlKey && !e.altKey && !/INPUT|TEXTAREA|SELECT/.test(el.tagName) && !ui.sheet) {
-    const i = window.innerWidth >= 900 ? ($('#qa-d') || $('#qa-h')) : $('#qa-m'); if (i) { e.preventDefault(); i.focus(); } return;
+    e.preventDefault(); openSheet({ type: 'add', kind: 'task', text: '' }); return;
   }
   if (e.key !== 'Enter' || e.isComposing) return;
+  if (el.id === 'add-in') { if (ui.sheet && ui.sheet.kind === 'note' && !e.ctrlKey && !e.metaKey) return; e.preventDefault(); submitAdd(); return; }
   if (el.form) return; /* forms submit themselves (works with Arabic keyboards too) */
   if (el.classList.contains('hnum')) { e.preventDefault(); el.blur(); return; }
   if (el.id === 'hp-num') { e.preventDefault(); const l = ui.sheet && ui.sheet.id; if (l) habitSaveNum(l); return; }
   const k = el.dataset && el.dataset.enter;
-  if (el.id === 't-title' || el.id === 'ev-title') { e.preventDefault(); el.blur(); return; }
+  if (el.id === 't-title' || el.id === 'ev-title' || el.id === 'proj-name') { e.preventDefault(); el.blur(); return; }
   if (el.id === 'n-title') { e.preventDefault(); const b = $('#n-text') || $('#n-rich'); if (b) b.focus(); return; }
   if (!k) return;
   e.preventDefault();
@@ -3031,6 +3186,7 @@ document.addEventListener('keydown', e => {
 document.addEventListener('submit', e => {
   const f = e.target.closest('form[data-form]'); if (!f) return;
   e.preventDefault();
+  if (f.dataset.form === 'addq') { submitAdd(); return; }
   const input = f.querySelector('input'); const v = (input.value || '').trim(); const kind = f.dataset.form; const t = curTask();
   const refocus = id => setTimeout(() => { const i = document.getElementById(id); if (i) i.focus(); }, 20);
   if (kind === 'qa') { submitQA(input); return; }
@@ -3060,6 +3216,7 @@ document.addEventListener('submit', e => {
 let typeT;
 document.addEventListener('input', e => {
   const el = e.target; const t = curTask();
+  if (el.id === 'add-in' && ui.sheet && ui.sheet.type === 'add') { ui.sheet.text = el.value; const pv = $('#add-prev'); if (pv) pv.innerHTML = ui.sheet.kind === 'note' ? '' : qaPreview((ui.sheet.kind === 'event' ? '@' : '') + el.value); return; }
   if (el.dataset && el.dataset.enter === 'qa') {
     ui.qa = el.value;
     const prev = document.getElementById(el.id + '-prev'); if (prev) prev.innerHTML = ui.view === 'notes' || ui.view === 'home' ? '' : qaPreview(el.value);

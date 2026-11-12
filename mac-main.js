@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const HOME = 'https://9effrr.github.io/zero/';
-const BG = '#1D202C';
+const BG = '#0B0B0C';
 const CHROME_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 

@@ -42,7 +42,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private lateinit var web: WebView
-    private val bg = Color.parseColor("#1D202C")
+    private val bg = Color.parseColor("#0B0B0C")
 
     private val authLauncher = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { r ->
         try {
