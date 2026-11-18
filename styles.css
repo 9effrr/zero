@@ -1239,3 +1239,18 @@ html,body{background:var(--bg);font-family:var(--font);font-size:15px;line-heigh
   .stage:hover .stage-h .ib.sm,.stage-h .ib.sm:focus-visible{opacity:.7}
 }
 .stage-h .sdates input{flex:0 0 auto;width:118px;padding:2px 0}
+
+/* v24 — cancelled tasks and projects */
+.task .chk.cx{border:0;background:var(--s2);color:var(--mut)}
+.task .chk.cx svg{width:12px;height:12px}
+.task.iscx .tt{color:var(--dim);text-decoration:line-through;text-decoration-color:rgba(236,230,222,.2)}
+.mt .cx{color:var(--mut)}
+.cxbtn{margin-top:24px;background:transparent;border:1px solid var(--hair2);color:var(--tx2);display:flex;align-items:center;justify-content:center;gap:8px;font-weight:400}
+.cxbtn:hover{color:var(--tx);background:var(--s1)}
+.pcx-note{display:flex;align-items:center;gap:8px;margin-top:12px;padding:10px 14px;border-radius:12px;background:var(--s1);color:var(--tx2);font-size:14px}
+.pcx-note span{flex:1}
+.pcard.pcx{opacity:.5}
+.pcard.pcx .nm{text-decoration:line-through;text-decoration-color:rgba(236,230,222,.25)}
+.pst svg{width:13px;height:13px}
+.ptitle .pchk.cx{border-style:dashed;opacity:.5}
+.ib.on{color:var(--sand)}

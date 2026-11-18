@@ -69,6 +69,7 @@ const I = {
   note: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
   gear: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
   link: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>',
+  ban: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/></svg>',
   trash: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>',
   sync: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 0 1-15.5 6.2"/><path d="M3 12A9 9 0 0 1 18.5 5.8"/><path d="M18 2v4h-4"/><path d="M6 22v-4h4"/></svg>',
   img: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></svg>',
@@ -178,6 +179,7 @@ function nextOcc(s, r) {
 const repLabel = r => r ? ({ daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly', yearly: 'Yearly' })[r.freq] || 'Repeats' : '';
 function toggleDone(t) {
   const td = today();
+  if (t.cancelled) { restoreTask(t); return; }
   if (t.repeat && !t.done) {
     const due = t.due || td;
     addLog('done', t, { due, late: due < td ? diffD(due, td) : 0, subtasks: (t.subtasks || []).filter(s => s.done).length + '/' + (t.subtasks || []).length });
@@ -193,6 +195,26 @@ function toggleDone(t) {
     addLog('undone', t);
     upd(t, { done: false, doneAt: null });
   }
+}
+/* cancelled: closed without being done. It leaves every open list, never counts as done, and can be restored */
+function cancelTask(t, by) {
+  addLog('cancelled', t);
+  upd(t, { cancelled: true, cancelledAt: new Date().toISOString(), cancelledWith: by || null, done: true, doneAt: null });
+}
+function restoreTask(t) {
+  addLog('restored', t);
+  upd(t, { cancelled: false, cancelledAt: null, cancelledWith: null, done: false, doneAt: null });
+}
+function cancelProject(p) {
+  const open = allTasks().filter(x => x.projectId === p.id && !x.done);
+  if (!confirm(open.length ? `Cancel this project? Its ${open.length} open ${open.length === 1 ? 'task' : 'tasks'} will be cancelled too. You can restore it later.` : 'Cancel this project? You can restore it later.')) return false;
+  open.forEach(t => cancelTask(t, p.id));
+  upd(p, { cancelled: true, cancelledAt: new Date().toISOString(), done: true, doneAt: null });
+  return true;
+}
+function restoreProject(p) {
+  allTasks().filter(x => x.projectId === p.id && x.cancelled && x.cancelledWith === p.id).forEach(restoreTask);
+  upd(p, { cancelled: false, cancelledAt: null, done: false, doneAt: null });
 }
 function newProject(name, areaId = null) {
   const p = { id: uid(), name, areaId: areaId || null, deadline: null, stages: [], createdAt: new Date().toISOString(), updatedAt: now(), deleted: false };
@@ -1054,7 +1076,7 @@ function sharedView() {
 /* ---------------- project PDF (brief + to-do list, white, for printing) ---------------- */
 const txtDir = s => { const m = String(s || '').match(/[A-Za-z\u00C0-\u024F]|[\u0590-\u08FF\uFB1D-\uFEFC]/); return m && /[\u0590-\u08FF\uFB1D-\uFEFC]/.test(m[0]) ? 'rtl' : 'ltr'; };
 function projectPdfHTML(p) {
-  const ts = allTasks().filter(t => t.projectId === p.id);
+  const ts = allTasks().filter(t => t.projectId === p.id && !t.cancelled);
   const s = projStats(p); const a = areaOf(p.areaId);
   const fid = p.sh;
   const day = d => d ? pd(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
@@ -1376,7 +1398,7 @@ function buildIndex(start, end, evs) {
   const idx = {}; const get = d => idx[d] || (idx[d] = { ev: [], tk: [] });
   evs.forEach(e => evDays(e).forEach(d => { if (d >= start && d <= end) get(d).ev.push(e); }));
   tasks().forEach(t => {
-    if (!t.due) return;
+    if (!t.due || t.cancelled) return;
     if (t.due >= start && t.due <= end) get(t.due).tk.push({ t });
     if (t.repeat && !t.done && t.repeat.freq !== 'daily') {
       let d = nextOcc(t.due, t.repeat), g = 0;
@@ -1396,6 +1418,7 @@ function buildIndex(start, end, evs) {
 }
 function taskMeta(t, o = {}) {
   const m = [];
+  if (t.cancelled) m.push('<span class="cx">Cancelled</span>');
   const a = areaOf(taskArea(t));
   if (a && !o.inArea) m.push(`<span class="achip">${adot(a)}${esc(a.name)}</span>`);
   const pn = o.inProject ? '' : projName(t.projectId);
@@ -1420,6 +1443,8 @@ function taskHTML(t, o = {}) {
   }
   const urg = isUrgent(t);
   const meta = taskMeta(t, o);
+  if (t.cancelled) return `<div class="task isdone iscx"><button class="chk cx" data-act="toggle" data-id="${esc(t.id)}" aria-label="Restore: ${esc(t.title)}" title="Restore">${I.x}</button>
+    <button class="b" data-act="open-task" data-id="${esc(t.id)}"><span class="tt" dir="auto">${esc(t.title || 'Untitled')}</span>${meta ? `<span class="mt">${meta}</span>` : ''}</button></div>`;
   return `<div class="task ${t.done ? 'isdone' : ''} ${o.ghost ? 'ghost' : ''}">
     ${o.ghost ? `<span class="chk" aria-hidden="true" style="border-style:dashed"></span>` :
       `<button class="chk ${urg ? 'urg' : ''} ${t.done ? 'done' : ''}" data-act="toggle" data-id="${esc(t.id)}" aria-label="${t.done ? 'Mark not done' : 'Complete'}: ${esc(t.title)}">${t.done ? I.check : ''}</button>`}
@@ -1440,7 +1465,7 @@ function addForm(form, ph, o = {}) {
 function syncDot() { return `<span class="sync-dot ${({ ok: 'ok', busy: 'busy', err: 'err' }[syncState] || '')}"></span>`; }
 function sortOpen(list) { return [...list.filter(t => !t.done).sort(byDue), ...list.filter(t => t.done).sort((a, b) => ((a.doneAt || '') < (b.doneAt || '') ? 1 : -1))]; }
 function projStats(p) {
-  const ts = allTasks().filter(t => t.projectId === p.id);
+  const ts = allTasks().filter(t => t.projectId === p.id && !t.cancelled);
   const done = ts.filter(t => t.done).length;
   const overdue = ts.filter(isOverdue).length;
   return { total: ts.length, done, open: ts.length - done, overdue, pct: ts.length ? Math.round(done / ts.length * 100) : 0 };
@@ -1449,8 +1474,8 @@ function pcardHTML(p) {
   const s = projStats(p); const a = areaOf(p.areaId);
   const pr = p.priority || 0;
   const st = (p.stages || []).find(x => x.start && x.due && x.start <= today() && x.due >= today()) || (p.stages || []).find(x => x.due && x.due >= today());
-  const foot = p.done ? `${I.check} Completed` : st ? `<span dir="auto">${esc(st.name)}</span> · until ${esc(shortDay(st.due))}` : p.deadline ? `Due ${esc(shortDay(p.deadline))}` : `${s.total} ${s.total === 1 ? 'task' : 'tasks'}`;
-  return `<button class="pcard prio-${pr} ${p.done ? 'pdone' : ''}" data-act="open-project" data-id="${esc(p.id)}" style="--ac:${a ? a.color : 'var(--s3)'}">
+  const foot = p.cancelled ? `${I.ban} Cancelled` : p.done ? `${I.check} Completed` : st ? `<span dir="auto">${esc(st.name)}</span> · until ${esc(shortDay(st.due))}` : p.deadline ? `Due ${esc(shortDay(p.deadline))}` : `${s.total} ${s.total === 1 ? 'task' : 'tasks'}`;
+  return `<button class="pcard prio-${pr} ${p.done ? 'pdone' : ''} ${p.cancelled ? 'pcx' : ''}" data-act="open-project" data-id="${esc(p.id)}" style="--ac:${a ? a.color : 'var(--s3)'}">
     ${pr ? `<span class="pbadge">${pr === 2 ? 'Top priority' : 'Important'}</span>` : ''}
     <span class="nm" dir="auto">${esc(p.name)}</span>
     ${p.brief ? `<span class="pcbrief" dir="auto">${esc(p.brief)}</span>` : ''}
@@ -2505,12 +2530,12 @@ function areaView(a) {
   html += sec('Projects', `<div class="plist">${ps.map(pcardHTML).join('')}</div>
     <div class="addline">${addForm('proj', 'New project in ' + a.name, { id: 'proj-new' })}</div>
     ${ps.length || psDone.length ? '' : '<p class="hint">A project keeps one goal’s tasks together, split into stages if you like.</p>'}
-    ${psDone.length ? `<div class="sec-h" style="margin-top:16px"><h2>Completed projects · ${psDone.length}</h2><button class="link" data-act="show-donep">${ui.showDoneP ? 'Hide' : 'Show'}</button></div>${ui.showDoneP ? `<div class="plist">${psDone.map(pcardHTML).join('')}</div>` : ''}` : ''}`, { right: `<span class="mono">${ps.length || ''}</span>` });
+    ${psDone.length ? `<div class="sec-h" style="margin-top:16px"><h2>${psDone.some(p => p.cancelled) ? 'Completed & cancelled projects' : 'Completed projects'} · ${psDone.length}</h2><button class="link" data-act="show-donep">${ui.showDoneP ? 'Hide' : 'Show'}</button></div>${ui.showDoneP ? `<div class="plist">${psDone.map(pcardHTML).join('')}</div>` : ''}` : ''}`, { right: `<span class="mono">${ps.length || ''}</span>` });
   if (LIST_AREAS.includes(a.id)) html += habitsHTML(a.id) + listsHTML(a.id);
   html += `<section class="sec"><div class="sec-h"><h2>Tasks</h2><span class="mono">${open.length || ''}</span></div>
     ${groups.map(([n, list, cls]) => `<div class="grp-h ${cls || ''}">${n}</div>${list.map(t => taskHTML(t, { inArea: true, hideDue: n === 'Today' })).join('')}`).join('') || '<div class="empty">No loose tasks.</div>'}
     <div class="addline">${addForm('area-task', 'Add a task to ' + a.name, { id: 'area-new' })}</div></section>`;
-  if (done.length) html += `<section class="sec"><div class="sec-h"><h2>Completed</h2><button class="link" data-act="show-done">${ui.showDone ? 'Hide' : 'Show ' + done.length}</button></div>${ui.showDone ? done.slice(0, 40).map(t => taskHTML(t, { inArea: true })).join('') : ''}</section>`;
+  if (done.length) html += `<section class="sec"><div class="sec-h"><h2>${done.some(t => t.cancelled) ? 'Completed & cancelled' : 'Completed'}</h2><button class="link" data-act="show-done">${ui.showDone ? 'Hide' : 'Show ' + done.length}</button></div>${ui.showDone ? done.slice(0, 40).map(t => taskHTML(t, { inArea: true })).join('') : ''}</section>`;
   return html + '</div>';
 }
 function projectView(p) {
@@ -2541,15 +2566,15 @@ function projectView(p) {
   const people = p.sh ? `<section class="sec"><div class="sec-h"><h2>People</h2><button class="link" data-act="proj-share">Manage</button></div>${shMembers(p.sh).map(m => `<div class="mrow sm">${avatar(p.sh, m.email)}<div class="mtx"><b>${esc(m.email === me() ? 'You' : shName(p.sh, m.email))}</b></div><span class="mrole">${m.role === 'owner' ? 'Owner' : m.role === 'reader' ? 'Can view' : 'Can edit'}</span></div>`).join('')}</section>` : '';
   return `<div class="pview">
     ${topbar(member ? backBtn('shared', 'Shared') : backBtn(a ? a.id : 'sections', a ? esc(a.name) : 'Sections', a ? `<i class="tabsq" style="background:${a.color}"></i>` : ''),
-      `${p.sh ? `<button class="avs" data-act="proj-share" aria-label="People">${shMembers(p.sh).slice(0, 4).map(m => avatar(p.sh, m.email)).join('')}</button>` : ''}<button class="ib" data-act="proj-pdf" aria-label="Export PDF" title="Export PDF">${I.pdf}</button><button class="ib" data-act="proj-share" aria-label="Share project" title="Share">${I.people}</button><button class="ib" data-act="del-project" aria-label="${member ? 'Leave project' : 'Delete project'}" title="${member ? 'Leave' : 'Delete'}">${I.trash}</button>`)}
+      `${p.sh ? `<button class="avs" data-act="proj-share" aria-label="People">${shMembers(p.sh).slice(0, 4).map(m => avatar(p.sh, m.email)).join('')}</button>` : ''}<button class="ib" data-act="proj-pdf" aria-label="Export PDF" title="Export PDF">${I.pdf}</button><button class="ib" data-act="proj-share" aria-label="Share project" title="Share">${I.people}</button>${member ? '' : `<button class="ib ${p.cancelled ? 'on' : ''}" data-act="proj-cancel" aria-label="${p.cancelled ? 'Restore project' : 'Cancel project'}" title="${p.cancelled ? 'Restore project' : 'Cancel project'}">${I.ban}</button>`}<button class="ib" data-act="del-project" aria-label="${member ? 'Leave project' : 'Delete project'}" title="${member ? 'Leave' : 'Delete'}">${I.trash}</button>`)}
     <div class="pgrid"><div class="pmain">
     <div class="pmeta">
       <div class="pprio" role="group" aria-label="Importance">${PRIO.map(([v, l]) => `<button data-act="proj-prio" data-v="${v}" class="pr-${v} ${(p.priority || 0) === v ? 'on' : ''}" aria-pressed="${(p.priority || 0) === v}">${l}</button>`).join('')}</div>
       <label class="pdl">Due <input type="date" id="proj-deadline" value="${esc(p.deadline || '')}"></label>
       ${member ? `<span>Shared by ${esc(shName(p.sh, SH[p.sh].data && SH[p.sh].data.owner))}</span>` : `<label class="pdl">Section <select id="proj-area" class="mini-sel"><option value="">None</option>${AREAS.map(x => `<option value="${x.id}" ${p.areaId === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>`}
     </div>
-    <div class="ptitle"><button class="pchk ${p.done ? 'on' : ''}" data-act="proj-done" aria-pressed="${!!p.done}" aria-label="${p.done ? 'Mark project not done' : 'Mark project done'}">${p.done ? I.check : ''}</button><textarea id="proj-name" class="title-in ptin" rows="1" dir="auto" aria-label="Project name">${esc(p.name)}</textarea></div>
-    ${p.done ? `<div class="pdone-note">${I.check} Completed ${esc(fmtDay(isoDay(p.doneAt || new Date().toISOString())))}</div>` : s.total && s.done === s.total ? `<button class="pdone-cta" data-act="proj-done">All ${s.total} tasks are done. Mark the project as completed</button>` : ''}
+    <div class="ptitle"><button class="pchk ${p.done && !p.cancelled ? 'on' : ''} ${p.cancelled ? 'cx' : ''}" data-act="proj-done" aria-pressed="${!!p.done}" aria-label="${p.done ? 'Mark project not done' : 'Mark project done'}">${p.done ? I.check : ''}</button><textarea id="proj-name" class="title-in ptin" rows="1" dir="auto" aria-label="Project name">${esc(p.name)}</textarea></div>
+    ${p.cancelled ? `<div class="pcx-note">${I.ban}<span>Cancelled ${esc(fmtDay(isoDay(p.cancelledAt || new Date().toISOString())))}</span><button class="link" data-act="proj-cancel">Restore</button></div>` : p.done ? `<div class="pdone-note">${I.check} Completed ${esc(fmtDay(isoDay(p.doneAt || new Date().toISOString())))}</div>` : s.total && s.done === s.total ? `<button class="pdone-cta" data-act="proj-done">All ${s.total} tasks are done. Mark the project as completed</button>` : ''}
     <textarea id="proj-brief" class="pbrief" rows="1" dir="auto" placeholder="Add a brief — the one thing to remember about this project" aria-label="Project brief">${esc(p.brief || '')}</textarea>
     <div class="mob">${prog}</div>
     <div class="stages">
@@ -2589,7 +2614,7 @@ function kcardHTML(t, p) {
 function boardHTML(p, ts) {
   const cols = [['todo', 'To do'], ['doing', 'Doing'], ['done', 'Done']];
   const by = { todo: [], doing: [], done: [] };
-  ts.forEach(t => by[kcol(t)].push(t));
+  ts.filter(t => !t.cancelled).forEach(t => by[kcol(t)].push(t));
   by.todo.sort(byDue); by.doing.sort(byDue);
   by.done.sort((a, b) => ((a.doneAt || '') < (b.doneAt || '') ? 1 : -1));
   return `<div class="kboard" id="kboard">${cols.map(([k, l]) => `<section class="kcol k-${k}" data-kcol="${k}">
@@ -2632,7 +2657,7 @@ function reviewData(from, to) {
   const inR = iso => { const d = isoDay(iso); return d >= from && d <= to; };
   const logs = Object.values(db.log).filter(l => inR(l.at) && sc.lOk(l)).sort((a, b) => (a.at < b.at ? -1 : 1));
   const undone = new Set(logs.filter(l => l.type === 'undone').map(l => l.taskId));
-  const done = logs.filter(l => l.type === 'done' && (l.repeat || !undone.has(l.taskId) || (db.tasks[l.taskId] && db.tasks[l.taskId].done)));
+  const done = logs.filter(l => l.type === 'done' && (l.repeat || !undone.has(l.taskId) || (db.tasks[l.taskId] && db.tasks[l.taskId].done && !db.tasks[l.taskId].cancelled)));
   const created = logs.filter(l => l.type === 'created');
   const postponed = logs.filter(l => l.type === 'postponed');
   const late = done.filter(l => l.late > 0);
@@ -2669,8 +2694,8 @@ function reviewData(from, to) {
   const urgentOpen = open.filter(t => t.urgent).length;
   const overdueAge = overdue.length ? overdue.reduce((a, t) => a + diffD(t.due, td), 0) / overdue.length : 0;
   const inRd = iso => !!iso && isoDay(iso) >= from && isoDay(iso) <= to;
-  const projDoneRange = scopeProjects.filter(p => p && p.done && inRd(p.doneAt)).length;
-  const projOpen = scopeProjects.filter(p => p && !p.done).length, projDone = scopeProjects.filter(p => p && p.done).length;
+  const projDoneRange = scopeProjects.filter(p => p && p.done && !p.cancelled && inRd(p.doneAt)).length;
+  const projOpen = scopeProjects.filter(p => p && !p.done).length, projDone = scopeProjects.filter(p => p && p.done && !p.cancelled).length;
   const notesN = sc.fA || sc.fP ? null : Object.values(db.notes).filter(n => !n.deleted && inRd(n.createdAt)).length;
   const doneDays = new Set(Object.values(db.log).filter(l => l.type === 'done' && sc.lOk(l)).map(l => isoDay(l.at)));
   let streak = 0; { let d = doneDays.has(td) ? td : addD(td, -1); while (doneDays.has(d) && streak < 2000) { streak++; d = addD(d, -1); } }
@@ -2896,7 +2921,7 @@ function taskSheet(t) {
   return `
   <div class="sheet-top"><button class="ib" data-act="close-sheet" aria-label="Close">${I.l}</button><span class="crumb" dir="auto">${esc(crumb)}</span><button class="ib" data-act="del-task" aria-label="Delete task">${I.trash}</button></div>
   <div style="display:flex;gap:14px;align-items:flex-start">
-    <button class="chk-big" data-act="toggle" data-id="${esc(t.id)}" aria-label="${t.done ? 'Mark not done' : 'Complete task'}" style="width:26px;height:26px;border-radius:13px;flex-shrink:0;margin-top:4px;padding:0;display:flex;align-items:center;justify-content:center;color:var(--mut);${t.done ? 'background:var(--s3);border:0' : `background:transparent;border:1.5px solid ${urg ? 'var(--orange)' : '#3A3A3F'}`}">${t.done ? I.check : ''}</button>
+    <button class="chk-big" data-act="toggle" data-id="${esc(t.id)}" aria-label="${t.cancelled ? 'Restore task' : t.done ? 'Mark not done' : 'Complete task'}" style="width:26px;height:26px;border-radius:13px;flex-shrink:0;margin-top:4px;padding:0;display:flex;align-items:center;justify-content:center;color:var(--mut);${t.done ? 'background:var(--s3);border:0' : `background:transparent;border:1.5px solid ${urg ? 'var(--orange)' : '#3A3A3F'}`}">${t.done ? I.check : ''}</button>
     <textarea id="t-title" class="title-in" rows="1" dir="auto" placeholder="Task title" aria-label="Title">${esc(t.title)}</textarea>
   </div>
   <div class="card" style="margin-top:18px">
@@ -2918,7 +2943,8 @@ function taskSheet(t) {
     <label class="img-add">${I.img}<span>Add image</span><input type="file" id="t-img" accept="image/*" multiple></label>`)}
   ${sec('Links', `${(t.links || []).map((l, i) => `<div style="display:flex;align-items:center;gap:8px;min-height:40px"><a href="${esc(l)}" target="_blank" rel="noopener" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;text-decoration:none;display:flex;align-items:center;gap:8px">${I.link}${esc(l.replace(/^https?:\/\//, ''))}</a><button class="ib" data-act="link-del" data-i="${i}" aria-label="Remove link">${I.x}</button></div>`).join('')}
     ${addForm('link', 'Paste a link', { id: 'l-new', type: 'url' })}`)}
-  <p class="mut" style="font-size:12px;margin-top:26px">Created ${esc(new Date(t.createdAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}${t.postponed ? ` · postponed ${t.postponed}×` : ''}${t.doneAt ? ` · done ${esc(new Date(t.doneAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}` : ''}</p>`;
+  <button class="btn full cxbtn" data-act="${t.cancelled ? 'task-restore' : 'task-cancel'}">${t.cancelled ? 'Restore task' : I.ban + 'Cancel task'}</button>
+  <p class="mut" style="font-size:12px;margin-top:16px">Created ${esc(new Date(t.createdAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}${t.postponed ? ` · postponed ${t.postponed}×` : ''}${t.cancelledAt ? ` · cancelled ${esc(new Date(t.cancelledAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}` : ''}${t.doneAt ? ` · done ${esc(new Date(t.doneAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}` : ''}</p>`;
 }
 function noteMeta(n) {
   const words = ((n.title || '') + ' ' + (n.text || '')).trim().split(/\s+/).filter(Boolean).length;
@@ -3098,8 +3124,12 @@ document.addEventListener('click', e => {
     case 'wk': { ui.sel = addD(ui.sel, +el.dataset.n); if (ui.sel.slice(0, 7) !== ui.month) setMonth(ui.sel.slice(0, 7)); else renderMain(); break; }
     case 'month-toggle': ui.calOpen = !ui.calOpen; if (ui.calOpen && ui.month !== ui.sel.slice(0, 7)) setMonth(ui.sel.slice(0, 7)); else renderMain(); break;
     case 'show-donep': ui.showDoneP = !ui.showDoneP; renderMain(); break;
+    case 'task-cancel': { const x = ui.sheet && db.tasks[ui.sheet.id]; if (!x) break; if (x.repeat && !confirm('This task repeats. Cancel the whole series?')) break; cancelTask(x); closeSheet(); toast('Task cancelled'); renderMain(); break; }
+    case 'task-restore': { const x = ui.sheet && db.tasks[ui.sheet.id]; if (!x) break; restoreTask(x); renderSheet(); renderMain(); toast('Task restored'); break; }
+    case 'proj-cancel': { const p = db.projects[ui.projectId]; if (!p) break; if (p.cancelled) { restoreProject(p); toast('Project restored'); } else if (cancelProject(p)) toast('Project cancelled'); renderMain(); break; }
     case 'proj-done': {
       const p = db.projects[ui.projectId]; if (!p) break;
+      if (p.cancelled) { restoreProject(p); renderMain(); break; }
       if (p.done) { upd(p, { done: false, doneAt: null }); renderMain(); break; }
       const left = allTasks().filter(x => x.projectId === p.id && !x.done).length;
       if (left && !confirm(`${left} ${left === 1 ? 'task is' : 'tasks are'} still open in this project. Mark it completed anyway?`)) break;
